@@ -3,68 +3,92 @@ import config
 import numpy as np
 
 def update_animations(current_time_ms, falling_animations, grid, next_active_columns):
-    """Met à jour les animations de chute et place les blocs à leur destination."""
-    new_anims = []
-    animating_sources = set()
-    completed_this_frame = []
-    for anim in falling_animations:
+    """
+    Updates the positions of falling blocks based on their animations.
+    Removes animations that have completed.
+    """
+    completed_animations = []
+    for idx, anim in enumerate(falling_animations):
         progress = (current_time_ms - anim["start_time"]) / anim["duration"]
-        if progress >= 1.0:
-            completed_this_frame.append(anim)
+        if 0 <= progress <= 1:
+            # Calculate the new y position based on the animation progress
+            start_row, end_row, col = anim["start_row"], anim["end_row"], anim["col"]
+            current_row = start_row + (end_row - start_row) * progress
+            current_row = int(current_row)  # Ensure it's an integer for indexing
+
+            # If the block has moved to a new row, update the grid
+            if current_row != anim["current_row"]:
+                # Clear the previous position
+                grid[anim["current_row"], col] = config.EMPTY
+                # Set the new position
+                grid[current_row, col] = anim["block_type"]
+                # Update the current row in the animation
+                anim["current_row"] = current_row
+
+            # Mark the column as active for the next frame
+            next_active_columns.add(col)
         else:
-            new_anims.append(anim)
-            animating_sources.add(anim["src"])
+            # Animation is complete
+            start_row, end_row, col = anim["start_row"], anim["end_row"], anim["col"]
+            grid[anim["current_row"], col] = config.EMPTY
+            grid[end_row, col] = anim["block_type"]
+            completed_animations.append(idx)
 
-    for anim in completed_this_frame:
-         dst_row, dst_col = anim["dest"]
-         if 0 <= dst_row < config.GRID_HEIGHT and 0 <= dst_col < config.GRID_WIDTH:
-              if grid[dst_row, dst_col] == config.EMPTY:
-                 grid[dst_row, dst_col] = config.GRAVEL
-                 # Mark column active for next frame (still needed for landing)
-                 next_active_columns.add(dst_col)
-                 if dst_col > 0: next_active_columns.add(dst_col - 1)
-                 if dst_col < config.GRID_WIDTH - 1: next_active_columns.add(dst_col + 1)
+    # Remove completed animations in reverse order to avoid index issues
+    for idx in sorted(completed_animations, reverse=True):
+        del falling_animations[idx]
 
-    falling_animations = new_anims
-    return falling_animations, animating_sources, grid, next_active_columns
+    return falling_animations, set(), grid, next_active_columns
 
-def run_gravity_simulation(active_columns, grid, falling_animations, animating_sources, current_time_ms, next_active_columns):
-    """Simule la gravité pour les colonnes actives."""
-    columns_to_check = sorted(list(active_columns))
-    grid_width = config.GRID_WIDTH
-    grid_height = config.GRID_HEIGHT
+def run_gravity_simulation(active_columns, grid, falling_animations, animating_sources,
+                           current_time_ms, next_active_columns):
+    """Runs the gravity simulation for the given columns."""
+    new_falling_animations = []
+    for col in list(active_columns):  # Iterate over a copy to allow modification
+        # Find the topmost empty block in the column
+        topmost_empty = -1
+        for r in range(config.GRID_HEIGHT):
+            if grid[r, col] == config.EMPTY:
+                topmost_empty = r
+                break
 
-    for c in columns_to_check:
-        if not (0 <= c < grid_width): continue
+        if topmost_empty == -1:
+            continue  # No empty blocks in this column
 
-        # Early exit: Check if the column contains any gravel
-        if config.GRAVEL not in grid[:, c]:
-            continue
+        # Find the topmost solid block above the empty block
+        topmost_solid = -1
+        for r in range(topmost_empty - 1, -1, -1):
+            if grid[r, col] != config.EMPTY:
+                topmost_solid = r
+                break
 
-        can_check_left = c > 0
-        can_check_right = c < grid_width - 1
+        if topmost_solid == -1:
+            continue  # No solid blocks above the empty block
 
-        for r in range(grid_height - 2, -1, -1):
-            if (r, c) in animating_sources: continue
-            if grid[r, c] == config.GRAVEL:
-                if grid[r + 1, c] == config.EMPTY:
-                    grid[r, c] = config.EMPTY
-                    new_anim = {"src": (r, c), "dest": (r + 1, c), "start_time": current_time_ms, "duration": config.ANIM_DURATION}
-                    falling_animations.append(new_anim)
-                    animating_sources.add(new_anim["src"])
-                    next_active_columns.add(c)
-                elif grid[r + 1, c] != config.EMPTY:
-                    possibilities = []
-                    if can_check_left and grid[r + 1, c - 1] == config.EMPTY and grid[r, c - 1] == config.EMPTY: possibilities.append((r + 1, c - 1))
-                    if can_check_right and grid[r + 1, c + 1] == config.EMPTY and grid[r, c + 1] == config.EMPTY: possibilities.append((r + 1, c + 1))
-                    if possibilities:
-                        dest = random.choice(possibilities)
-                        grid[r, c] = config.EMPTY
-                        new_anim = {"src": (r, c), "dest": dest, "start_time": current_time_ms, "duration": config.ANIM_DURATION}
-                        falling_animations.append(new_anim)
-                        animating_sources.add(new_anim["src"])
-                        next_active_columns.add(c)
-                        next_active_columns.add(dest[1])
+        # If the block is not already animating, start a new animation
+        if (topmost_solid, col) not in animating_sources:
+            block_type = grid[topmost_solid, col]
+            # Clear the block from its original position
+            # grid[topmost_solid, col] = config.EMPTY # Moved to animation update
+
+            # Add a new animation to the list
+            animation = {
+                "start_time": current_time_ms,
+                "duration": 200,  # Duration of the animation in ms
+                "start_row": topmost_solid,
+                "end_row": topmost_empty,
+                "current_row": topmost_solid,
+                "col": col,
+                "block_type": block_type
+            }
+            falling_animations.append(animation)
+            new_falling_animations.append(animation)
+
+            # Add the block to the set of animating sources
+            animating_sources.add((topmost_solid, col))
+
+            # Mark the column as active for the next frame
+            next_active_columns.add(col)
 
     return grid, falling_animations, animating_sources, next_active_columns
 

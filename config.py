@@ -36,6 +36,6 @@ COLOR_PLAYER = (0, 0, 255)
 
 # --- Configuration Pygame ---
 WINDOW_TITLE = "Pixel Mining - Modular"
-FPS_CAP = 60
+FPS_CAP = 300
 GRAVITY = 500
 JUMP_SPEED = -300
