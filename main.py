@@ -20,12 +20,17 @@ from systems.machine_system import MachineSystem
 from utils.rendering import create_block_surfaces, render_chunk, draw_performance_stats
 from systems.crafting_system import CraftingSystem
 from ui.crafting_ui import CraftingUI
+from systems.storage_system import StorageSystem
+from systems.conveyor_system import ConveyorSystem
+from ui.storage_ui import StorageUI
+from systems.multi_block_system import MultiBlockSystem
+from systems.extractor_system import ExtractorSystem
 
 # --- Game Settings ---
 DEBUG_MODE = True          # Enable debug mode
 SAVE_FILE = "world.json"   # Path to the save file
-SEED = 1                   # World generation seed
-ENABLE_CHUNK_CACHE = True  # Enable chunk caching for performance
+SEED = 1                   # World generation seedd
+ENABLE_CHUNK_CACHE = True  # Enable chunk caching for performanced
 MAX_ACTIVE_CHUNKS = 200    # Maximum active chunks to render
 PERFORMANCE_MONITOR = True # Show performance stats 
 VIEW_DISTANCE_MULTIPLIER = 2.0  # View distance multiplier
@@ -166,6 +171,10 @@ fps_font = pygame.font.SysFont("Consolas", 18)
 # Create block surfaces
 block_surfaces = create_block_surfaces()
 
+# Initialize systems
+# Create MultiBlockSystem before others that depend on it
+multi_block_system = MultiBlockSystem(get_block_at, set_block_at)
+
 # Initialize the machine system
 machine_system = MachineSystem(get_block_at, set_block_at)
 
@@ -176,6 +185,28 @@ machine_ui = MachineUI(screen_width, screen_height, block_surfaces)
 crafting_system = CraftingSystem(get_block_at, set_block_at)
 crafting_ui = CraftingUI(screen_width, screen_height, block_surfaces)
 
+# Initialize storage and conveyor systems with multi-block awareness
+storage_system = StorageSystem(get_block_at, set_block_at, multi_block_system)
+conveyor_system = ConveyorSystem(get_block_at, set_block_at, multi_block_system)
+storage_ui = StorageUI(screen_width, screen_height, block_surfaces)
+
+# Initialize extractor system to move items
+extractor_system = ExtractorSystem(
+    get_block_at, set_block_at, storage_system, conveyor_system, multi_block_system
+)
+
+# Initialize inventory
+inventory = Inventory()
+
+# Add these variables to track UI state
+active_storage = None
+
+# Add conveyor placement variables
+conveyor_placement_active = False
+conveyor_placement_mode = 0  # 0=ligne droite, 1=diagonale, 2=zigzag
+conveyor_placement_direction = 0  # 0=droite, 1=bas, 2=gauche, 3=haut
+conveyor_placement_preview = []  # Liste des positions de prévisualisation
+
 # Set random seed for world generation
 random.seed(SEED)
 np.random.seed(SEED)
@@ -185,7 +216,7 @@ chunk_workers = start_chunk_workers(CHUNK_GEN_THREAD_COUNT, SEED)
 
 # Initialize game state
 if os.path.exists(SAVE_FILE):
-    load_world_from_file(SAVE_FILE)
+    load_world_from_file(SAVE_FILE, storage_system)
     
 # Get initial player position
 player_x, player_y = find_spawn_position()
@@ -231,14 +262,14 @@ if __name__ == '__main__':
         # Handle events
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
-                save_world_to_file(SAVE_FILE)
+                save_world_to_file(SAVE_FILE, storage_system)
                 running = False
             
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_o:  # Press 'O' to manually save the map
-                    save_world_to_file(SAVE_FILE)
+                    save_world_to_file(SAVE_FILE, storage_system)
                 elif event.key == pygame.K_l:  # Press 'L' to manually load the map
-                    load_world_from_file(SAVE_FILE)
+                    load_world_from_file(SAVE_FILE, storage_system)
                 elif event.key == pygame.K_c:  # Press 'C' to toggle player collision
                     player.toggle_collision()
                     print(f"Player collision {'enabled' if player.collision_enabled else 'disabled'}.")
@@ -247,6 +278,7 @@ if __name__ == '__main__':
                     screen = pygame.display.set_mode((screen_width, screen_height), pygame.RESIZABLE)
                     machine_ui.update_screen_size(screen_width, screen_height)
                     crafting_ui.update_screen_size(screen_width, screen_height)
+                    storage_ui.update_screen_size(screen_width, screen_height)
                 elif event.key == pygame.K_1:  # Number keys to select hotbar slots
                     inventory.select_slot(0)
                 elif event.key == pygame.K_2:
@@ -279,11 +311,36 @@ if __name__ == '__main__':
                 elif event.key == pygame.K_t:  # Add crafting table to inventory
                     inventory.add_item(config.CRAFTING_TABLE)
                     print("Crafting table added to inventory!")
+                elif event.key == pygame.K_n:  # Press 'S' to add storage chest to inventory
+                    inventory.add_item(config.STORAGE_CHEST)
+                    print("Storage chest added to inventory!")
+                elif event.key == pygame.K_v:  # Press 'V' to add conveyor belt to inventory
+                    inventory.add_item(config.CONVEYOR_BELT)
+                    print("Conveyor belt added to inventory!")
+                elif event.key == pygame.K_b:  # Press 'B' to add vertical conveyor to inventory
+                    inventory.add_item(config.VERTICAL_CONVEYOR)
+                    print("Vertical conveyor added to inventory!")
+                elif event.key == pygame.K_x:  # Press 'X' to add item extractor to inventory
+                    inventory.add_item(config.ITEM_EXTRACTOR)
+                    print("Item extractor added to inventory!")
                 elif event.key == pygame.K_ESCAPE:  # Close active UIs when ESC is pressed
                     if machine_system.get_active_machine() is not None:
                         machine_system.close_machine_ui()
                     if crafting_system.get_active_table() is not None:
                         crafting_system.close_table_ui()
+                    active_storage = None
+                elif event.key == pygame.K_z:  # Touche Z pour activer/désactiver le mode de placement rapide
+                    conveyor_placement_active = not conveyor_placement_active
+                    conveyor_placement_preview = []
+                    print(f"Mode de placement rapide de convoyeurs {'activé' if conveyor_placement_active else 'désactivé'}")
+                elif event.key == pygame.K_r:  # Touche R pour changer le mode de placement
+                    conveyor_placement_mode = (conveyor_placement_mode + 1) % 3
+                    mode_names = ["Ligne Droite", "Diagonale", "Zig-Zag"]
+                    print(f"Mode de placement: {mode_names[conveyor_placement_mode]}")
+                elif event.key == pygame.K_TAB:  # Tab pour changer la direction
+                    conveyor_placement_direction = (conveyor_placement_direction + 1) % 4
+                    directions = ["Droite", "Bas", "Gauche", "Haut"]
+                    print(f"Direction de placement: {directions[conveyor_placement_direction]}")
             
             elif event.type == pygame.MOUSEBUTTONDOWN:
                 mouse_x, mouse_y = pygame.mouse.get_pos()
@@ -300,20 +357,54 @@ if __name__ == '__main__':
                             machine_system.open_machine_ui(*machine_origin)
                             # Close the crafting UI if it's open
                             crafting_system.close_table_ui()
+                            active_storage = None
                         else:
                             machine_system.register_machine(block_x, block_y)
                             machine_system.open_machine_ui(block_x, block_y)
                             crafting_system.close_table_ui()
+                            active_storage = None
                     elif get_block_at(block_x, block_y) == config.CRAFTING_TABLE or crafting_system.is_table_position(block_x, block_y):
                         table_origin = crafting_system.get_table_origin(block_x, block_y)
                         if table_origin:
                             crafting_system.open_table_ui(*table_origin)
                             # Close the machine UI if it's open
                             machine_system.close_machine_ui()
+                            active_storage = None
                         else:
                             crafting_system.register_table(block_x, block_y)
                             crafting_system.open_table_ui(block_x, block_y)
                             machine_system.close_machine_ui()
+                            active_storage = None
+                    
+                    # Add check for storage chests
+                    if get_block_at(block_x, block_y) == config.STORAGE_CHEST or storage_system.is_storage_position(block_x, block_y):
+                        if (block_x, block_y) in storage_system.storages:
+                            active_storage = (block_x, block_y)
+                        else:
+                            storage_system.register_storage(block_x, block_y)
+                            active_storage = (block_x, block_y)
+                        # Close other UIs
+                        machine_system.close_machine_ui()
+                        crafting_system.close_table_ui()
+                    
+                    # Check if clicking on a storage UI
+                    if active_storage is not None and storage_ui.is_point_in_ui(mouse_x, mouse_y):
+                        # Check for close button
+                        if storage_ui.is_close_button_clicked(mouse_x, mouse_y):
+                            active_storage = None
+                        else:
+                            # Handle item dragging from storage
+                            storage_data = storage_system.get_storage_at(*active_storage)
+                            clicked_item = storage_ui.get_slot_at_position(mouse_x, mouse_y, storage_data)
+                            
+                            if clicked_item:
+                                item_id, count = clicked_item
+                                # Start dragging this item
+                                inventory.dragged_item = (item_id, count)
+                                inventory.drag_source = "storage"
+                                inventory.drag_slot = active_storage
+                                # Remove from storage temporarily
+                                storage_system.take_item_from_storage(*active_storage, item_id, count)
                     
                     # Check for close button clicks in the machine UI
                     if machine_system.get_active_machine() is not None:
@@ -373,7 +464,22 @@ if __name__ == '__main__':
                         if selected_item:
                             block_type, _ = selected_item
                             
-                            if block_type == config.ORE_PROCESSOR:
+                            # Vérifier si c'est un convoyeur et si le mode de placement rapide est actif
+                            if conveyor_placement_active and (
+                                block_type == config.CONVEYOR_BELT or block_type == config.VERTICAL_CONVEYOR
+                            ):
+                                # Placer une série de convoyeurs selon la prévisualisation actuelle
+                                if conveyor_placement_preview:
+                                    for pos_x, pos_y in conveyor_placement_preview:
+                                        if multi_block_system.register_multi_block(pos_x, pos_y, block_type):
+                                            conveyor_system.register_conveyor(pos_x, pos_y, conveyor_placement_direction)
+                                            inventory.remove_item(inventory.selected_slot, 1)
+                                            chunk_x, chunk_y = get_chunk_coords(pos_x, pos_y)
+                                            mark_chunk_modified(chunk_x, chunk_y)
+                                            
+                                    # Vider la prévisualisation après placement
+                                    conveyor_placement_preview = []
+                            elif block_type == config.ORE_PROCESSOR:
                                 width, height = machine_system.get_machine_size(config.ORE_PROCESSOR)
                                 space_available = True
                                 for dx in range(width):
@@ -398,31 +504,65 @@ if __name__ == '__main__':
                                 inventory.remove_item(inventory.selected_slot)
                                 chunk_x, chunk_y = get_chunk_coords(block_x, block_y)
                                 mark_chunk_modified(chunk_x, chunk_y)
+                            elif block_type == config.STORAGE_CHEST:
+                                # Use multi-block system to place the 3x3 storage chest
+                                if multi_block_system.register_multi_block(block_x, block_y, block_type):
+                                    storage_system.register_storage(block_x, block_y)
+                                    inventory.remove_item(inventory.selected_slot)
+                                    chunk_x, chunk_y = get_chunk_coords(block_x, block_y)
+                                    mark_chunk_modified(chunk_x, chunk_y)
+                            elif block_type == config.CONVEYOR_BELT or block_type == config.VERTICAL_CONVEYOR:
+                                # Use multi-block system to place the 2x2 conveyor
+                                if multi_block_system.register_multi_block(block_x, block_y, block_type):
+                                    # Register with default direction (right/0)
+                                    conveyor_system.register_conveyor(block_x, block_y)
+                                    inventory.remove_item(inventory.selected_slot)
+                                    chunk_x, chunk_y = get_chunk_coords(block_x, block_y)
+                                    mark_chunk_modified(chunk_x, chunk_y)
+                            elif block_type == config.ITEM_EXTRACTOR:
+                                # Use multi-block system to place the 2x2 item extractor
+                                if multi_block_system.register_multi_block(block_x, block_y, block_type):
+                                    # Enregistrer l'extracteur avec le système d'extraction
+                                    extractor_system.register_extractor(block_x, block_y)
+                                    # Définir la direction initiale en fonction de l'orientation du joueur
+                                    # Par défaut, définir la direction vers la droite (0)
+                                    extractor_system.set_direction(block_x, block_y, 0)
+                                    inventory.remove_item(inventory.selected_slot)
+                                    chunk_x, chunk_y = get_chunk_coords(block_x, block_y)
+                                    mark_chunk_modified(chunk_x, chunk_y)
                             else:
                                 set_block_at(block_x, block_y, block_type)
                                 inventory.remove_item(inventory.selected_slot)
                                 chunk_x, chunk_y = get_chunk_coords(block_x, block_y)
                                 mark_chunk_modified(chunk_x, chunk_y)
                     
-                    if crafting_system.get_active_table() is not None and crafting_ui.is_point_in_ui(mouse_x, mouse_y):
-                        table_pos = crafting_system.get_active_table()
-                        slot_info = crafting_ui.get_slot_at_position(mouse_x, mouse_y)
+                    # Add handling for conveyor belt rotation
+                    if get_block_at(block_x, block_y) == config.CONVEYOR_BELT or get_block_at(block_x, block_y) == config.VERTICAL_CONVEYOR:
+                        if (block_x, block_y) in conveyor_system.conveyors:
+                            conveyor_system.rotate_conveyor(block_x, block_y)
+                        else:
+                            conveyor_system.register_conveyor(block_x, block_y)
+                    
+                    # Add handling for extractor rotation
+                    if get_block_at(block_x, block_y) == config.ITEM_EXTRACTOR:
+                        # Obtenir l'origine si c'est un multi-bloc
+                        origin = None
+                        if multi_block_system:
+                            origin = multi_block_system.get_multi_block_origin(block_x, block_y)
                         
-                        if slot_info:
-                            slot_type, slot_x, slot_y = slot_info
-                            
-                            if slot_type == "grid":
-                                selected_item = inventory.get_selected_item()
-                                if selected_item:
-                                    block_type, count = selected_item
-                                    if crafting_system.add_item_to_grid(table_pos, slot_x, slot_y, block_type, 1):
-                                        inventory.remove_item(inventory.selected_slot, 1)
-                            
-                            elif slot_type == "output":
-                                output_item = crafting_system.take_output_item(table_pos)
-                                if output_item:
-                                    block_type, count = output_item
-                                    inventory.add_item(block_type, count)
+                        if origin:
+                            x, y = origin
+                            # Faire tourner l'extracteur
+                            extractor_system.set_direction(x, y, extractor_system.extractors.get((x, y), {}).get("direction", 0) + 1)
+                            print(f"Direction de l'extracteur changée: {extractor_system.extractors.get((x, y), {}).get('direction', 0)}")
+                    
+                    # Add handling for storage UI right-click
+                    if active_storage is not None and storage_ui.is_point_in_ui(mouse_x, mouse_y):
+                        selected_item = inventory.get_selected_item()
+                        if selected_item:
+                            block_type, count = selected_item
+                            if storage_system.add_item_to_storage(*active_storage, block_type, 1):
+                                inventory.remove_item(inventory.selected_slot, 1)
             
             elif event.type == pygame.MOUSEBUTTONUP:
                 mouse_x, mouse_y = pygame.mouse.get_pos()
@@ -457,18 +597,17 @@ if __name__ == '__main__':
                                 inventory.drag_slot = None
                                 dropped = True
                     
-                    if not dropped and inventory.drag_source:
-                        if inventory.drag_source == "input":
-                            machine_system.add_item_to_machine(inventory.drag_slot, inventory.dragged_item[0], inventory.dragged_item[1])
-                        elif inventory.drag_source == "output":
-                            machine_data = machine_system.get_machine_data(inventory.drag_slot)
-                            machine_data["output"] = inventory.dragged_item
-                        elif inventory.drag_source == "crafting_grid" and inventory.drag_slot:
-                            table_pos, slot_x, slot_y = inventory.drag_slot
-                            crafting_system.add_item_to_grid(table_pos, slot_x, slot_y, 
-                                                            inventory.dragged_item[0], 
-                                                            inventory.dragged_item[1])
-                        
+                    # Add handling for dropping on storage
+                    if not dropped and active_storage is not None and storage_ui.is_point_in_ui(mouse_x, mouse_y) and inventory.dragged_item:
+                        if storage_system.add_item_to_storage(*active_storage, inventory.dragged_item[0], inventory.dragged_item[1]):
+                            inventory.dragged_item = None
+                            inventory.drag_source = None
+                            inventory.drag_slot = None
+                            dropped = True
+                    
+                    # Return dragged item to storage if it came from storage
+                    if not dropped and inventory.drag_source == "storage" and inventory.dragged_item:
+                        storage_system.add_item_to_storage(*inventory.drag_slot, inventory.dragged_item[0], inventory.dragged_item[1])
                         inventory.dragged_item = None
                         inventory.drag_source = None
                         inventory.drag_slot = None
@@ -499,6 +638,12 @@ if __name__ == '__main__':
         
         # Update machines
         machine_system.update()
+        
+        # Update conveyor system
+        conveyor_system.update(dt, storage_system, machine_system)
+        
+        # Mettre à jour le système d'extraction pour déplacer les items
+        extractor_system.update(dt)
         
         # --- RENDERING ---
         screen.fill((0, 0, 0))
@@ -549,6 +694,128 @@ if __name__ == '__main__':
             table_data = crafting_system.get_table_data(active_table)
             crafting_ui.draw(screen, table_data, inventory.dragged_item)
         
+        # Draw storage UI if active
+        if active_storage:
+            storage_data = storage_system.get_storage_at(*active_storage)
+            storage_ui.draw(screen, storage_data, inventory.dragged_item)
+        
+        # Draw items on conveyor belts
+        conveyor_system.draw_items(screen, camera_x, camera_y, block_surfaces)
+        
+        # Calcul de la prévisualisation du placement de convoyeurs
+        if conveyor_placement_active and inventory.get_selected_item():
+            selected_type = inventory.get_selected_item()[0]
+            if selected_type in [config.CONVEYOR_BELT, config.VERTICAL_CONVEYOR]:
+                # Calculer la position du bloc sous la souris
+                mouse_x, mouse_y = pygame.mouse.get_pos()
+                world_x = mouse_x + camera_x
+                world_y = mouse_y + camera_y
+                block_x = int(world_x // config.PIXEL_SIZE)
+                block_y = int(world_y // config.PIXEL_SIZE)
+                
+                # Obtenir les dimensions du convoyeur
+                width, height = multi_block_system.block_sizes.get(selected_type, (2, 2))
+                
+                # Calculer les positions selon le mode et la direction
+                conveyor_placement_preview = []
+                count_available = inventory.get_selected_item()[1]
+                max_length = min(20, count_available)  # Maximum 20 convoyeurs ou ce qui est disponible
+                
+                if conveyor_placement_mode == 0:  # Ligne droite
+                    dx, dy = 0, 0
+                    if conveyor_placement_direction == 0: dx = width  # Droite
+                    elif conveyor_placement_direction == 1: dy = height  # Bas
+                    elif conveyor_placement_direction == 2: dx = -width  # Gauche
+                    elif conveyor_placement_direction == 3: dy = -height  # Haut
+                    
+                    for i in range(max_length):
+                        next_x = block_x + i * dx
+                        next_y = block_y + i * dy
+                        
+                        # Vérifier si l'espace est libre
+                        space_available = True
+                        for cx in range(next_x, next_x + width):
+                            for cy in range(next_y, next_y + height):
+                                if get_block_at(cx, cy) != config.EMPTY:
+                                    space_available = False
+                                    break
+                            if not space_available:
+                                break
+                        
+                        if space_available:
+                            conveyor_placement_preview.append((next_x, next_y))
+                        else:
+                            break
+                            
+                elif conveyor_placement_mode == 1:  # Diagonale
+                    dx, dy = 0, 0
+                    if conveyor_placement_direction == 0: dx, dy = width, height  # Bas-droite
+                    elif conveyor_placement_direction == 1: dx, dy = -width, height  # Bas-gauche
+                    elif conveyor_placement_direction == 2: dx, dy = -width, -height  # Haut-gauche
+                    elif conveyor_placement_direction == 3: dx, dy = width, -height  # Haut-droite
+                    
+                    for i in range(max_length):
+                        next_x = block_x + i * dx
+                        next_y = block_y + i * dy
+                        
+                        # Vérifier si l'espace est libre
+                        space_available = True
+                        for cx in range(next_x, next_x + width):
+                            for cy in range(next_y, next_y + height):
+                                if get_block_at(cx, cy) != config.EMPTY:
+                                    space_available = False
+                                    break
+                            if not space_available:
+                                break
+                        
+                        if space_available:
+                            conveyor_placement_preview.append((next_x, next_y))
+                        else:
+                            break
+                
+                # Afficher la prévisualisation
+                for pos_x, pos_y in conveyor_placement_preview:
+                    # Dessiner un aperçu semi-transparent
+                    preview_surface = pygame.Surface((width * config.PIXEL_SIZE, height * config.PIXEL_SIZE), pygame.SRCALPHA)
+                    preview_color = list(config.BLOCKS[selected_type]["color"]) + [128]  # Ajouter transparence
+                    preview_surface.fill(preview_color)
+                    
+                    # Ajouter une flèche pour la direction
+                    arrow_color = (0, 0, 0, 200)
+                    center_x = width * config.PIXEL_SIZE // 2
+                    center_y = height * config.PIXEL_SIZE // 2
+                    arrow_size = min(width, height) * config.PIXEL_SIZE // 3
+                    
+                    if conveyor_placement_direction == 0:  # Droite
+                        pygame.draw.polygon(preview_surface, arrow_color, [
+                            (center_x, center_y - arrow_size//2),
+                            (center_x + arrow_size, center_y),
+                            (center_x, center_y + arrow_size//2)
+                        ])
+                    elif conveyor_placement_direction == 1:  # Bas
+                        pygame.draw.polygon(preview_surface, arrow_color, [
+                            (center_x - arrow_size//2, center_y),
+                            (center_x + arrow_size//2, center_y),
+                            (center_x, center_y + arrow_size)
+                        ])
+                    elif conveyor_placement_direction == 2:  # Gauche
+                        pygame.draw.polygon(preview_surface, arrow_color, [
+                            (center_x, center_y - arrow_size//2),
+                            (center_x - arrow_size, center_y),
+                            (center_x, center_y + arrow_size//2)
+                        ])
+                    elif conveyor_placement_direction == 3:  # Haut
+                        pygame.draw.polygon(preview_surface, arrow_color, [
+                            (center_x - arrow_size//2, center_y),
+                            (center_x + arrow_size//2, center_y),
+                            (center_x, center_y - arrow_size)
+                        ])
+                    
+                    # Afficher la prévisualisation sur l'écran
+                    screen_x = pos_x * config.PIXEL_SIZE - camera_x
+                    screen_y = pos_y * config.PIXEL_SIZE - camera_y
+                    screen.blit(preview_surface, (screen_x, screen_y))
+        
         inventory.draw_dragged_item(screen)
         
         if PERFORMANCE_MONITOR:
@@ -557,7 +824,7 @@ if __name__ == '__main__':
         pygame.display.flip()
         clock.tick(config.FPS_CAP)
     
-    save_world_to_file(SAVE_FILE)
+    save_world_to_file(SAVE_FILE, storage_system)
     stop_chunk_workers(chunk_workers)
     
     profiler.disable()

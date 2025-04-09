@@ -1,7 +1,7 @@
 import pygame
 from core import config
 from world import chunks  # Import chunks to access the cache and modified chunks
-
+from systems import conveyor_system, machine_system
 def create_block_surfaces():
     """Create surfaces for each block type."""
     block_surfaces = {}
@@ -12,7 +12,8 @@ def create_block_surfaces():
             block_surfaces[block_id] = surface
     return block_surfaces
 
-def render_chunk(chunk, chunk_x, chunk_y, camera_x, camera_y, mining_animation, block_surfaces, machine_system):
+def render_chunk(chunk, chunk_x, chunk_y, camera_x, camera_y, 
+                mining_animation, block_surfaces, machine_system, multi_block_system=None):
     """Renders a chunk to a surface."""
     # Check if the chunk is in cache and not modified
     cache_key = (chunk_x, chunk_y)
@@ -37,12 +38,12 @@ def render_chunk(chunk, chunk_x, chunk_y, camera_x, camera_y, mining_animation, 
             block_x = x * config.PIXEL_SIZE
             block_y = y * config.PIXEL_SIZE
             
-            # Check if this is a machine (special rendering)
             world_x = chunk_x * config.CHUNK_SIZE + x
             world_y = chunk_y * config.CHUNK_SIZE + y
             
+            # Check for special rendering based on block type
             if block_type == machine_system.ore_processor_id and machine_system.is_machine_position(world_x, world_y):
-                # Skip if this is not the origin point of the machine
+                # Skip if not the origin point of the machine
                 if not (world_x, world_y) in machine_system.machines:
                     continue
                 
@@ -66,6 +67,64 @@ def render_chunk(chunk, chunk_x, chunk_y, camera_x, camera_y, mining_animation, 
                 if visible_width > 0 and visible_height > 0:
                     surface.blit(machine_surface, (block_x, block_y), (0, 0, visible_width, visible_height))
                 continue
+            
+            # Check for multi-block structures
+            if multi_block_system and multi_block_system.is_multi_block(world_x, world_y):
+                origin = multi_block_system.get_multi_block_origin(world_x, world_y)
+                if origin and origin[0] == world_x and origin[1] == world_y:
+                    # This is the origin of a multi-block, render it specially
+                    block_data = multi_block_system.multi_blocks.get(origin)
+                    if block_data:
+                        width, height = block_data["size"]
+                        block_id = block_data["type"]
+                        
+                        # Create a special surface for the multi-block
+                        special_surface = pygame.Surface((width * config.PIXEL_SIZE, height * config.PIXEL_SIZE))
+                        block_color = config.BLOCKS[block_id]["color"]
+                        special_surface.fill(block_color)
+                        
+                        # Add visual details based on block type
+                        if block_id == config.STORAGE_CHEST:
+                            # Draw chest details
+                            pygame.draw.rect(special_surface, (120, 70, 20), (5, 5, width * config.PIXEL_SIZE - 10, height * config.PIXEL_SIZE - 10))
+                            pygame.draw.rect(special_surface, (90, 50, 10), (width * config.PIXEL_SIZE // 3, height * config.PIXEL_SIZE // 2, 
+                                                            width * config.PIXEL_SIZE // 3, height * config.PIXEL_SIZE // 6))
+                        elif block_id == config.CONVEYOR_BELT:
+                            # Draw conveyor details - direction arrows
+                            direction = conveyor_system.conveyors.get(origin, {}).get("direction", 0)
+                            arrow_color = (50, 50, 50)
+                            
+                            if direction == 0:  # Right
+                                points = [(width * config.PIXEL_SIZE // 4, height * config.PIXEL_SIZE // 2),
+                                         (width * config.PIXEL_SIZE * 3 // 4, height * config.PIXEL_SIZE // 2),
+                                         (width * config.PIXEL_SIZE * 2 // 3, height * config.PIXEL_SIZE // 3)]
+                                pygame.draw.polygon(special_surface, arrow_color, points)
+                            elif direction == 1:  # Down
+                                points = [(width * config.PIXEL_SIZE // 2, height * config.PIXEL_SIZE // 4),
+                                         (width * config.PIXEL_SIZE // 2, height * config.PIXEL_SIZE * 3 // 4),
+                                         (width * config.PIXEL_SIZE // 3, height * config.PIXEL_SIZE * 2 // 3)]
+                                pygame.draw.polygon(special_surface, arrow_color, points)
+                            elif direction == 2:  # Left
+                                points = [(width * config.PIXEL_SIZE * 3 // 4, height * config.PIXEL_SIZE // 2),
+                                         (width * config.PIXEL_SIZE // 4, height * config.PIXEL_SIZE // 2),
+                                         (width * config.PIXEL_SIZE // 3, height * config.PIXEL_SIZE // 3)]
+                                pygame.draw.polygon(special_surface, arrow_color, points)
+                            elif direction == 3:  # Up
+                                points = [(width * config.PIXEL_SIZE // 2, height * config.PIXEL_SIZE * 3 // 4),
+                                         (width * config.PIXEL_SIZE // 2, height * config.PIXEL_SIZE // 4),
+                                         (width * config.PIXEL_SIZE // 3, height * config.PIXEL_SIZE // 3)]
+                                pygame.draw.polygon(special_surface, arrow_color, points)
+
+                        # Only render the part that fits in this chunk
+                        visible_width = min(width, config.CHUNK_SIZE - x) * config.PIXEL_SIZE
+                        visible_height = min(height, config.CHUNK_SIZE - y) * config.PIXEL_SIZE
+                        
+                        if visible_width > 0 and visible_height > 0:
+                            surface.blit(special_surface, (block_x, block_y), (0, 0, visible_width, visible_height))
+                    continue
+                else:
+                    # This is a child block of a multi-block, skip rendering as it's handled by the origin
+                    continue
             
             # Group blocks by type for batch rendering
             if (world_y, world_x) in mining_animation:

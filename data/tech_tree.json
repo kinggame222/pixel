@@ -1,0 +1,72 @@
+{
+  "tiers": {
+    "basic": {
+      "name": "Basic Technology",
+      "requirements": [],
+      "unlocks": ["ore_processor", "storage_chest", "conveyor_belt"]
+    },
+    "automation": {
+      "name": "Automation",
+      "requirements": ["basic"],
+      "unlocks": ["vertical_conveyor", "item_extractor"]
+    },
+    "advanced_processing": {
+      "name": "Advanced Processing",
+      "requirements": ["basic"],
+      "unlocks": ["alloy_furnace", "crusher"]
+    },
+    "logistics": {
+      "name": "Logistics",
+      "requirements": ["automation"],
+      "unlocks": ["item_sorter", "storage_container"]
+    },
+    "energy": {
+      "name": "Energy Systems",
+      "requirements": ["automation", "advanced_processing"],
+      "unlocks": ["coal_generator", "powered_drill"]
+    }
+  },
+  
+  "research_items": {
+    "ore_processor": {
+      "name": "Ore Processor",
+      "description": "Processes raw ores into refined metals.",
+      "cost": {"iron_ore": 10, "stone": 20}
+    },
+    "storage_chest": {
+      "name": "Storage Chest",
+      "description": "Stores items for later use.",
+      "cost": {"wood": 15, "iron_ore": 5}
+    },
+    "conveyor_belt": {
+      "name": "Conveyor Belt",
+      "description": "Moves items horizontally between machines and storage.",
+      "cost": {"iron_bar": 5, "wood": 10}
+    },
+    "vertical_conveyor": {
+      "name": "Vertical Conveyor",
+      "description": "Moves items vertically between levels.",
+      "cost": {"conveyor_belt": 1, "iron_bar": 5}
+    },
+    "item_extractor": {
+      "name": "Item Extractor",
+      "description": "Pulls items from storage and places them on conveyors.",
+      "cost": {"iron_bar": 10, "diamond_crystal": 1}
+    },
+    "alloy_furnace": {
+      "name": "Alloy Furnace",
+      "description": "Creates advanced alloys from multiple ore types.",
+      "cost": {"iron_bar": 20, "ore_processor": 1}
+    },
+    "crusher": {
+      "name": "Ore Crusher",
+      "description": "Increases ore yield by crushing raw materials.",
+      "cost": {"iron_bar": 15, "diamond_crystal": 3}
+    },
+    "item_sorter": {
+      "name": "Item Sorter",
+      "description": "Routes items to different destinations based on type.",
+      "cost": {"iron_bar": 10, "diamond_crystal": 2}
+    }
+  }
+}

@@ -210,5 +210,61 @@
     "drops": {
       "15": 1.0
     }
+  },
+  {
+    "id": 16,
+    "name": "storage_chest",
+    "color": [153, 101, 21],
+    "solid": true,
+    "gravity": false,
+    "hardness": 2,
+    "density": 600,
+    "breakable": true,
+    "is_storage": true,
+    "drops": {
+      "16": 1.0
+    }
+  },
+  {
+    "id": 17,
+    "name": "conveyor_belt",
+    "color": [120, 120, 120],
+    "solid": true,
+    "gravity": false,
+    "hardness": 1,
+    "density": 500,
+    "breakable": true,
+    "is_conveyor": true,
+    "drops": {
+      "17": 1.0
+    }
+  },
+  {
+    "id": 18,
+    "name": "vertical_conveyor",
+    "color": [100, 100, 100],
+    "solid": true,
+    "gravity": false,
+    "hardness": 1,
+    "density": 500,
+    "breakable": true,
+    "is_conveyor": true,
+    "drops": {
+      "18": 1.0
+    }
+  },
+  {
+    "id": 19,
+    "name": "item_extractor",
+    "color": [255, 125, 0],
+    "solid": true,
+    "gravity": false,
+    "hardness": 2,
+    "density": 800,
+    "breakable": true,
+    "is_machine": true,
+    "drops": {
+      "19": 1.0
+    }
   }
 ]
