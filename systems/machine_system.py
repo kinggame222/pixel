@@ -1,6 +1,7 @@
-import config
 import time
-from processor_recipes import processor_recipes
+import json
+import os
+from core import config
 
 class MachineSystem:
     def __init__(self, get_block_at, set_block_at):
@@ -11,13 +12,72 @@ class MachineSystem:
         # Dictionary to track machines: {(x, y): MachineData}
         self.machines = {}
         
+        # Make sure ORE_PROCESSOR exists in config
+        self.ore_processor_id = getattr(config, "ORE_PROCESSOR", 12)
+        
         # Machine dimensions
         self.machine_sizes = {
-            config.ORE_PROCESSOR: (4, 6)  # 4 blocks wide, 6 blocks tall
+            self.ore_processor_id: (4, 6)  # 4 blocks wide, 6 blocks tall
         }
+        
+        # Load recipes from JSON file
+        self.recipes = self.load_recipes()
         
         # Currently open machine position (for UI)
         self.active_machine = None
+        
+        print("Machine System initialized with ore processor ID:", self.ore_processor_id)
+        print(f"Loaded {len(self.recipes)} recipes")
+    
+    def load_recipes(self):
+        """Load recipes from JSON file."""
+        recipes = {}
+        recipe_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "recipes.json")
+        
+        try:
+            if os.path.exists(recipe_file):
+                with open(recipe_file, "r") as f:
+                    all_recipes = json.load(f)
+                    
+                # Extract ore processor recipes
+                if "ore_processor" in all_recipes and "recipes" in all_recipes["ore_processor"]:
+                    for recipe in all_recipes["ore_processor"]["recipes"]:
+                        input_id = recipe["input_id"]
+                        recipes[input_id] = {
+                            "output": recipe["output_id"],
+                            "process_time": recipe["process_time"],
+                            "output_count": recipe["output_count"],
+                            "description": recipe.get("description", "")
+                        }
+                    print(f"Successfully loaded {len(recipes)} recipes from {recipe_file}")
+            else:
+                print(f"Recipe file not found at {recipe_file}, using fallback recipes")
+        except Exception as e:
+            print(f"Error loading recipes: {e}, using fallback recipes")
+        
+        # Fallback recipes if file not found or error occurs
+        if not recipes:
+            # Get block IDs for recipes with fallbacks
+            iron_ore_id = getattr(config, "IRON_ORE", 6)
+            iron_bar_id = getattr(config, "IRON_BAR", 13)
+            diamond_ore_id = getattr(config, "DIAMOND_ORE", 7)
+            diamond_crystal_id = getattr(config, "DIAMOND_CRYSTAL", 14)
+            
+            # Fallback recipes for processing ores
+            recipes = {
+                iron_ore_id: {
+                    "output": iron_bar_id,
+                    "process_time": 5.0,
+                    "output_count": 1
+                },
+                diamond_ore_id: {
+                    "output": diamond_crystal_id,
+                    "process_time": 10.0,
+                    "output_count": 1
+                }
+            }
+            
+        return recipes
     
     def register_machine(self, x, y):
         """Register a new machine at the given position."""
@@ -75,6 +135,11 @@ class MachineSystem:
         for machine_pos, _ in self.machines.items():
             machine_x, machine_y = machine_pos
             machine_type = self.get_block_at(machine_x, machine_y)
+            
+            # Make sure the block type exists and is valid
+            if machine_type is None or machine_type not in self.machine_sizes:
+                continue
+                
             width, height = self.get_machine_size(machine_type)
             
             if (machine_x <= x < machine_x + width and 
@@ -104,13 +169,13 @@ class MachineSystem:
             if machine["input"] is None:
                 machine["input"] = (block_type, count)
                 # Check if we can process this item and start processing if possible
-                if processor_recipes.can_process(block_type):
+                if block_type in self.recipes:
                     self.start_processing(machine_pos)
                 return True
             elif machine["input"][0] == block_type:
                 machine["input"] = (block_type, machine["input"][1] + count)
                 # Check if we were waiting for more input to start processing
-                if machine["process_start"] is None and processor_recipes.can_process(block_type):
+                if machine["process_start"] is None and block_type in self.recipes:
                     self.start_processing(machine_pos)
                 return True
         return False
@@ -138,20 +203,17 @@ class MachineSystem:
             # Check if machine has input but no output and isn't already processing
             if (machine["input"] and 
                 (machine["output"] is None or 
-                 machine["output"][0] == processor_recipes.get_output(machine["input"][0])) and
+                 machine["output"][0] == self.recipes.get(machine["input"][0], {}).get("output")) and
                 machine["process_start"] is None):
                 
                 input_type, input_count = machine["input"]
                 
                 # Check if we have a recipe for this input
-                if processor_recipes.can_process(input_type):
-                    # Check if we have enough input materials
-                    required_input = processor_recipes.get_required_input(input_type)
-                    if input_count >= required_input:
-                        # Start processing
-                        machine["process_start"] = time.time()
-                        machine["process_duration"] = processor_recipes.get_processing_time(input_type)
-                        return True
+                if input_type in self.recipes:
+                    # Start processing
+                    machine["process_start"] = time.time()
+                    machine["process_duration"] = self.recipes[input_type]["process_time"]
+                    return True
         
         return False
     
@@ -163,7 +225,7 @@ class MachineSystem:
             # Skip machines that aren't processing
             if machine["process_start"] is None:
                 # Check if we can start processing (might have been waiting for materials)
-                if machine["input"] is not None and processor_recipes.can_process(machine["input"][0]):
+                if machine["input"] is not None and machine["input"][0] in self.recipes:
                     self.start_processing(pos)
                 continue
             
@@ -172,31 +234,34 @@ class MachineSystem:
                 input_type, input_count = machine["input"]
                 
                 # Check if we still have a valid recipe
-                if processor_recipes.can_process(input_type):
+                if input_type in self.recipes:
                     # Get recipe details
-                    output_type = processor_recipes.get_output(input_type)
-                    output_count = processor_recipes.get_output_count(input_type)
-                    required_input = processor_recipes.get_required_input(input_type)
+                    recipe = self.recipes[input_type]
                     
-                    # Consume the input
-                    if input_count > required_input:
-                        machine["input"] = (input_type, input_count - required_input)
+                    # Consume one input item
+                    if input_count > 1:
+                        machine["input"] = (input_type, input_count - 1)
                     else:
                         machine["input"] = None
                     
                     # Generate output
+                    output_type = recipe["output"]
+                    output_count = recipe["output_count"]
+                    
                     if machine["output"] is None:
                         machine["output"] = (output_type, output_count)
                     elif machine["output"][0] == output_type:
-                        # Add to existing output
                         machine["output"] = (output_type, machine["output"][1] + output_count)
+                    else:
+                        # Different output type - can't output
+                        pass
                     
                     # Reset processing
                     machine["process_start"] = None
                     machine["process_duration"] = None
                     
                     # If there's still input and no output slot conflict, start processing again
-                    if machine["input"] is not None and machine["input"][1] >= required_input:
+                    if machine["input"] is not None:
                         self.start_processing(pos)
     
     def get_machine_data(self, machine_pos):

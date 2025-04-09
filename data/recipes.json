@@ -1,0 +1,72 @@
+{
+    "ore_processor": {
+        "recipes": [
+            {
+                "input_id": 6,
+                "input_name": "iron_ore",
+                "input_count": 1,
+                "output_id": 13,
+                "output_name": "iron_bar",
+                "output_count": 1,
+                "process_time": 5.0,
+                "description": "Iron Ore → Iron Bar"
+            },
+            {
+                "input_id": 7,
+                "input_name": "diamond_ore",
+                "input_count": 1,
+                "output_id": 14,
+                "output_name": "diamond_crystal", 
+                "output_count": 1,
+                "process_time": 10.0,
+                "description": "Diamond Ore → Diamond Crystal"
+            },
+            {
+                "input_id": 2,
+                "input_name": "stone",
+                "input_count": 1,
+                "output_id": 1,
+                "output_name": "gravel",
+                "output_count": 2,
+                "process_time": 3.0,
+                "description": "Stone → Gravel (x2)"
+            },
+            {
+                "input_id": 1,
+                "input_name": "gravel",
+                "input_count": 1,
+                "output_id": 4,
+                "output_name": "sand",
+                "output_count": 1,
+                "process_time": 2.0,
+                "description": "Gravel → Sand"
+            }
+        ]
+    },
+    "crafting_table": {
+        "recipes": [
+            {
+                "input": [
+                    {"id": 5, "name": "wood", "count": 4}
+                ],
+                "output": {"id": 15, "name": "crafting_table", "count": 1},
+                "description": "4 Wood → Crafting Table"
+            },
+            {
+                "input": [
+                    {"id": 13, "name": "iron_bar", "count": 5}
+                ],
+                "output": {"id": 16, "name": "iron_pickaxe", "count": 1},
+                "description": "5 Iron Bars → Iron Pickaxe"
+            },
+            {
+                "input": [
+                    {"id": 5, "name": "wood", "count": 2},
+                    {"id": 3, "name": "dirt", "count": 4}
+                ],
+                "output": {"id": 9, "name": "grass", "count": 2},
+                "description": "2 Wood + 4 Dirt → 2 Grass Blocks"
+            }
+        ]
+    }
+}

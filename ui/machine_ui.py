@@ -1,6 +1,5 @@
 import pygame
-import config
-from processor_recipes import processor_recipes
+from core import config
 
 class MachineUI:
     def __init__(self, screen_width, screen_height, block_surfaces):
@@ -27,6 +26,11 @@ class MachineUI:
         
         # Initialize font for UI text
         self.font = pygame.font.SysFont("Arial", 16)
+        
+        # Close button properties
+        self.close_button_size = 20
+        self.close_button_x = self.ui_x + self.ui_width - self.close_button_size - 5  # Top-right corner
+        self.close_button_y = self.ui_y + 5
     
     def update_screen_size(self, screen_width, screen_height):
         """Update UI positioning when screen size changes"""
@@ -35,9 +39,13 @@ class MachineUI:
         self.ui_x = (screen_width - self.ui_width) // 2
         self.ui_y = (screen_height - self.ui_height) // 2
         self.input_slot_x = self.ui_x + 50
-        self.input_slot_y = self.ui_y + 75
         self.output_slot_x = self.ui_x + 200
+        self.input_slot_y = self.ui_y + 75
         self.output_slot_y = self.ui_y + 75
+        
+        # Update close button position
+        self.close_button_x = self.ui_x + self.ui_width - self.close_button_size - 5
+        self.close_button_y = self.ui_y + 5
     
     def draw(self, screen, machine_data, progress, dragged_item=None):
         """Draw the machine UI with input, output slots and progress bar"""
@@ -46,6 +54,18 @@ class MachineUI:
                         (self.ui_x, self.ui_y, self.ui_width, self.ui_height))
         pygame.draw.rect(screen, (100, 100, 100), 
                         (self.ui_x, self.ui_y, self.ui_width, self.ui_height), 2)
+        
+        # Draw close button (X) in the top-right corner
+        pygame.draw.rect(screen, (200, 70, 70), 
+                        (self.close_button_x, self.close_button_y, self.close_button_size, self.close_button_size))
+        
+        # Draw the X
+        pygame.draw.line(screen, (255, 255, 255),
+                        (self.close_button_x + 4, self.close_button_y + 4),
+                        (self.close_button_x + self.close_button_size - 4, self.close_button_y + self.close_button_size - 4), 2)
+        pygame.draw.line(screen, (255, 255, 255),
+                        (self.close_button_x + self.close_button_size - 4, self.close_button_y + 4),
+                        (self.close_button_x + 4, self.close_button_y + self.close_button_size - 4), 2)
         
         # Draw machine preview at the top center
         preview_x = self.ui_x + (self.ui_width - self.machine_preview_width) // 2
@@ -74,13 +94,13 @@ class MachineUI:
         if (dragged_item and slot_rect.collidepoint(mouse_x, mouse_y)):
             pygame.draw.rect(screen, (100, 200, 100), slot_rect, 2)  # Green highlight for valid drop target
         
-        # Update instance variables to match the new positions
+        # Update the instance variables
         self.input_slot_y = input_slot_y
         
         # Draw output slot
         output_slot_y = input_slot_y
-        pygame.draw.rect(screen, (50, 50, 50), 
-                        (self.output_slot_x, output_slot_y, self.slot_size, self.slot_size))
+        output_slot_rect = pygame.Rect(self.output_slot_x, output_slot_y, self.slot_size, self.slot_size)
+        pygame.draw.rect(screen, (50, 50, 50), output_slot_rect)
         self.output_slot_y = output_slot_y
         
         # Draw labels
@@ -94,9 +114,8 @@ class MachineUI:
         # Draw recipe info if there's an input item
         if machine_data and machine_data["input"]:
             input_type = machine_data["input"][0]
-            if processor_recipes.can_process(input_type):
-                recipe_desc = processor_recipes.get_description(input_type)
-                recipe_text = self.font.render(recipe_desc, True, (255, 255, 255))
+            if input_type in config.BLOCKS:
+                recipe_text = self.font.render(f"Processing: {config.BLOCKS[input_type]['name']}", True, (255, 255, 255))
                 screen.blit(recipe_text, (self.ui_x + (self.ui_width - recipe_text.get_width()) // 2, 
                                         self.ui_y + self.ui_height - 40))
         
@@ -162,3 +181,8 @@ class MachineUI:
               self.output_slot_y <= y <= self.output_slot_y + self.slot_size):
             return "output"
         return None
+    
+    def is_close_button_clicked(self, x, y):
+        """Check if the close button was clicked"""
+        return (self.close_button_x <= x <= self.close_button_x + self.close_button_size and
+                self.close_button_y <= y <= self.close_button_y + self.close_button_size)

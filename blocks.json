@@ -196,5 +196,19 @@
     "drops": {
       "14": 1.0
     }
+  },
+  {
+    "id": 15,
+    "name": "crafting_table",
+    "color": [139, 69, 19],
+    "solid": true,
+    "gravity": false,
+    "hardness": 3,
+    "density": 800,
+    "breakable": true,
+    "is_machine": true,
+    "drops": {
+      "15": 1.0
+    }
   }
 ]
