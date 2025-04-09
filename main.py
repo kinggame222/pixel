@@ -6,6 +6,8 @@ import sys  # Pour quitter proprement
 import random  # Pour la génération procédurale
 import json  # Import the json module
 from threading import Thread
+from queue import Queue
+import threading
 
 # Importe les modules locaux
 import config
@@ -17,29 +19,155 @@ CHUNK_SIZE = 16  # Size of each chunk (in blocks)
 
 # --- Performance Settings ---
 ENABLE_CHUNK_CACHE = True  # Enable chunk caching for performance
-MAX_ACTIVE_CHUNKS = 500  # Increased from 100 to 500 for better visibility
+MAX_ACTIVE_CHUNKS = 200  # Maximum active chunks to render
 PERFORMANCE_MONITOR = True  # Show performance stats 
 VIEW_DISTANCE_MULTIPLIER = 2.0  # Multiplier to increase view distance
+CHUNK_LOAD_RADIUS = 5  # Radius of chunks to keep loaded around player
 
+# --- Infinite World Settings ---
+ENABLE_INFINITE_WORLD = True  # Enable infinite world generation
+CHUNK_GEN_THREAD_COUNT = 2  # Number of threads for chunk generation
+CHUNK_UNLOAD_DISTANCE = 10  # Distance in chunks to unload chunks
 
 # --- Chunk Cache ---
 chunk_cache = {}  # Dictionary to store rendered chunk surfaces
 modified_chunks = set()  # Set to track which chunks need to be re-rendered
+loaded_chunks = {}  # Dictionary to store loaded chunk data
+
+# Add a thread-safe queue for chunk generation requests
+chunk_gen_queue = Queue()
+chunk_gen_active = True  # Flag to control chunk generation threads
+
+# --- Initialisation Pygame ---
+pygame.init()
+# Utilise les dimensions de config.py
+screen_width = config.GRID_WIDTH * config.PIXEL_SIZE // 2  # Exemple : fenêtre plus petite que la grille totale
+screen_height = config.GRID_HEIGHT * config.PIXEL_SIZE // 2
+screen = pygame.display.set_mode((screen_width, screen_height), pygame.RESIZABLE)  # Ajout de pygame.RESIZABLE
+pygame.display.set_caption(config.WINDOW_TITLE)
+fps_font = pygame.font.SysFont("Consolas", 18)
+clock = pygame.time.Clock()
 
 def get_chunk_coords(x, y):
     """Returns the chunk coordinates for a given block coordinate."""
-    return x // CHUNK_SIZE, y // CHUNK_SIZE
+    # Handle negative coordinates properly
+    chunk_x = x // CHUNK_SIZE
+    if x < 0 and x % CHUNK_SIZE != 0:
+        chunk_x -= 1
+    chunk_y = y // CHUNK_SIZE
+    if y < 0 and y % CHUNK_SIZE != 0:
+        chunk_y -= 1
+    return chunk_x, chunk_y
 
-def create_chunks(grid):
-    """Creates a dictionary of chunks from the grid."""
-    chunks = {}
-    for y in range(config.GRID_HEIGHT):
-        for x in range(config.GRID_WIDTH):
-            chunk_x, chunk_y = get_chunk_coords(x, y)
-            if (chunk_x, chunk_y) not in chunks:
-                chunks[(chunk_x, chunk_y)] = {}
-            chunks[(chunk_x, chunk_y)][(x % CHUNK_SIZE, y % CHUNK_SIZE)] = grid[y, x]
-    return chunks
+def get_local_block_coords(x, y):
+    """Returns the local coordinates within a chunk for a given block coordinate."""
+    local_x = x % CHUNK_SIZE
+    if x < 0 and local_x != 0:
+        local_x = CHUNK_SIZE + local_x
+    local_y = y % CHUNK_SIZE
+    if y < 0 and local_y != 0:
+        local_y = CHUNK_SIZE + local_y
+    return local_x, local_y
+
+def get_block_at(x, y):
+    """Gets the block type at the given world coordinates."""
+    chunk_x, chunk_y = get_chunk_coords(x, y)
+    local_x, local_y = get_local_block_coords(x, y)
+    
+    # Make sure the chunk is loaded
+    chunk_key = (chunk_x, chunk_y)
+    if chunk_key not in loaded_chunks:
+        return config.EMPTY  # Return empty for unloaded chunks
+    
+    return loaded_chunks[chunk_key][local_y, local_x]
+
+def set_block_at(x, y, block_type):
+    """Sets the block type at the given world coordinates."""
+    chunk_x, chunk_y = get_chunk_coords(x, y)
+    local_x, local_y = get_local_block_coords(x, y)
+    
+    # Make sure the chunk is loaded
+    chunk_key = (chunk_x, chunk_y)
+    if chunk_key not in loaded_chunks:
+        generate_chunk(chunk_x, chunk_y)
+    
+    loaded_chunks[chunk_key][local_y, local_x] = block_type
+    mark_chunk_modified(chunk_x, chunk_y)
+
+def generate_chunk(chunk_x, chunk_y):
+    """Generates a new chunk at the given chunk coordinates."""
+    chunk = np.full((CHUNK_SIZE, CHUNK_SIZE), config.EMPTY, dtype=np.uint8)
+    
+    # Generate terrain using map_generation module
+    map_generation.generate_chunk(chunk, chunk_x, chunk_y, SEED)
+    
+    # Store the chunk in loaded_chunks
+    loaded_chunks[(chunk_x, chunk_y)] = chunk
+    return chunk
+
+def chunk_generation_worker():
+    """Worker function for background chunk generation."""
+    global chunk_gen_active
+    while chunk_gen_active:
+        try:
+            # Get a chunk request from the queue with a timeout
+            chunk_x, chunk_y = chunk_gen_queue.get(timeout=1.0)
+            
+            # Skip if the chunk is already loaded
+            if (chunk_x, chunk_y) in loaded_chunks:
+                chunk_gen_queue.task_done()
+                continue
+            
+            # Generate the chunk
+            generate_chunk(chunk_x, chunk_y)
+            
+            # Mark the task as done
+            chunk_gen_queue.task_done()
+        except Queue.Empty:
+            # Queue is empty, just continue
+            pass
+        except Exception as e:
+            print(f"Error in chunk generation: {e}")
+
+def ensure_chunks_around_point(x, y, radius):
+    """Ensures that chunks around the given point are loaded or queued for loading."""
+    center_chunk_x, center_chunk_y = get_chunk_coords(x // config.PIXEL_SIZE, y // config.PIXEL_SIZE)
+    
+    # Queue chunks for loading
+    for dx in range(-radius, radius + 1):
+        for dy in range(-radius, radius + 1):
+            chunk_x = center_chunk_x + dx
+            chunk_y = center_chunk_y + dy
+            
+            if (chunk_x, chunk_y) not in loaded_chunks:
+                chunk_gen_queue.put((chunk_x, chunk_y))
+
+def unload_distant_chunks(player_x, player_y):
+    """Unloads chunks that are too far from the player."""
+    player_chunk_x, player_chunk_y = get_chunk_coords(int(player_x // config.PIXEL_SIZE), 
+                                                     int(player_y // config.PIXEL_SIZE))
+    
+    # Find chunks to unload
+    chunks_to_unload = []
+    for chunk_key in loaded_chunks.keys():
+        chunk_x, chunk_y = chunk_key
+        distance = max(abs(chunk_x - player_chunk_x), abs(chunk_y - player_chunk_y))
+        if distance > CHUNK_UNLOAD_DISTANCE:
+            chunks_to_unload.append(chunk_key)
+    
+    # Unload the chunks
+    for chunk_key in chunks_to_unload:
+        # Save modified chunks (if we had persistence)
+        if chunk_key in modified_chunks:
+            # TODO: Save chunk to disk here if implementing persistence
+            modified_chunks.remove(chunk_key)
+        
+        # Remove from loaded chunks
+        del loaded_chunks[chunk_key]
+        
+        # Remove from render cache
+        if chunk_key in chunk_cache:
+            del chunk_cache[chunk_key]
 
 def get_active_chunks(player_x, player_y, screen_width, screen_height):
     """Returns a set of active chunk coordinates based on the player's position and screen size."""
@@ -92,16 +220,6 @@ def get_active_chunks(player_x, player_y, screen_width, screen_height):
     
     return active_chunks
 
-# --- Initialisation Pygame ---
-pygame.init()
-# Utilise les dimensions de config.py
-screen_width = config.GRID_WIDTH * config.PIXEL_SIZE // 2  # Exemple : fenêtre plus petite que la grille totale
-screen_height = config.GRID_HEIGHT * config.PIXEL_SIZE // 2
-screen = pygame.display.set_mode((screen_width, screen_height), pygame.RESIZABLE)  # Ajout de pygame.RESIZABLE
-pygame.display.set_caption(config.WINDOW_TITLE)
-fps_font = pygame.font.SysFont("Consolas", 18)
-clock = pygame.time.Clock()
-
 # --- Debug Mode ---
 DEBUG_MODE = True  # Set to True to enable debug mode
 
@@ -134,24 +252,6 @@ SEED = 12345  # Change this to generate different maps
 random.seed(SEED)
 np.random.seed(SEED)
 
-# Crée la grille initiale
-grid = np.full((config.GRID_HEIGHT, config.GRID_WIDTH), config.EMPTY, dtype=np.uint8)
-
-# Generate the map using the function from map_generation.py
-map_generation.generate_map(grid, SEED)
-
-# Create chunks from the grid
-chunks = create_chunks(grid)
-
-# Pre-calculate block positions within chunks
-block_positions = {}
-for chunk_coords, chunk in chunks.items():
-    block_positions[chunk_coords] = {}
-    for (x_offset, y_offset) in chunk.keys():
-        x = chunk_coords[0] * CHUNK_SIZE + x_offset
-        y = chunk_coords[1] * CHUNK_SIZE + y_offset
-        block_positions[chunk_coords][(x_offset, y_offset)] = (x, y)
-
 # Position initiale du joueur (au centre de la grille, en haut)
 player_x = float(config.GRID_WIDTH * config.PIXEL_SIZE // 2)
 player_y = float(config.GRID_HEIGHT * config.PIXEL_SIZE // 4)
@@ -182,10 +282,10 @@ def clamp_player_position(px, py):
 
 # --- Collision Detection ---
 def is_solid_block(x, y):
-    if 0 <= y < config.GRID_HEIGHT and 0 <= x < config.GRID_WIDTH:
-        block_type = grid[y, x]
-        if block_type in BLOCKS:
-            return BLOCKS[block_type]["solid"]
+    """Checks if the block at the given coordinates is solid."""
+    block_type = get_block_at(x, y)
+    if block_type in BLOCKS:
+        return BLOCKS[block_type]["solid"]
     return False
 
 def check_collision(px, py, move_x, move_y):
@@ -273,12 +373,21 @@ def draw_inventory(screen):
             screen.blit(count_surface, count_rect)
 
 # --- Rendering Functions ---
-def render_chunk(chunk_x, chunk_y, chunk, block_positions, camera_x, camera_y, mining_animation, block_surfaces):
+def render_chunk(chunk_x, chunk_y, camera_x, camera_y, mining_animation, block_surfaces):
     """Renders a chunk of the grid to a surface."""
     # Check if the chunk is in cache and has not been modified
     cache_key = (chunk_x, chunk_y)
     if ENABLE_CHUNK_CACHE and cache_key in chunk_cache and cache_key not in modified_chunks:
         return chunk_cache[cache_key]
+    
+    # Skip rendering if the chunk is not loaded
+    if (chunk_x, chunk_y) not in loaded_chunks:
+        # Return an empty surface
+        surface = pygame.Surface((CHUNK_SIZE * config.PIXEL_SIZE, CHUNK_SIZE * config.PIXEL_SIZE))
+        surface.fill((0, 0, 0))  # Black background
+        return surface
+    
+    chunk = loaded_chunks[(chunk_x, chunk_y)]
     
     surface = pygame.Surface((CHUNK_SIZE * config.PIXEL_SIZE, CHUNK_SIZE * config.PIXEL_SIZE))
     surface.fill((0, 0, 0))  # Black background
@@ -286,20 +395,24 @@ def render_chunk(chunk_x, chunk_y, chunk, block_positions, camera_x, camera_y, m
     # Optimization: Draw blocks in batches by type
     blocks_by_type = {}
     
-    for (x_offset, y_offset), block_type in chunk.items():
-        if block_type == config.EMPTY:
-            continue
+    for y in range(CHUNK_SIZE):
+        for x in range(CHUNK_SIZE):
+            block_type = chunk[y, x]
             
-        x, y = block_positions[(chunk_x, chunk_y)][(x_offset, y_offset)]
-        
-        if 0 <= y < config.GRID_HEIGHT and 0 <= x < config.GRID_WIDTH:
-            block_x = x_offset * config.PIXEL_SIZE
-            block_y = y_offset * config.PIXEL_SIZE
+            if block_type == config.EMPTY:
+                continue
+            
+            # Convert chunk-local coordinates to world coordinates
+            world_x = chunk_x * CHUNK_SIZE + x
+            world_y = chunk_y * CHUNK_SIZE + y
+            
+            block_x = x * config.PIXEL_SIZE
+            block_y = y * config.PIXEL_SIZE
             
             # Group blocks by type for batch rendering
-            if (y, x) in mining_animation:
+            if (world_y, world_x) in mining_animation:
                 # Mining animation blocks need individual rendering
-                animation_progress = mining_animation[(y, x)]
+                animation_progress = mining_animation[(world_y, world_x)]
                 red_intensity = int(255 * animation_progress)
                 animated_surface = pygame.Surface((config.PIXEL_SIZE, config.PIXEL_SIZE))
                 block_color = BLOCKS[block_type]["color"]
@@ -332,9 +445,8 @@ def render_chunk(chunk_x, chunk_y, chunk, block_positions, camera_x, camera_y, m
     
     return surface
 
-def mark_chunk_modified(x, y):
+def mark_chunk_modified(chunk_x, chunk_y):
     """Mark a chunk as modified so it will be re-rendered."""
-    chunk_x, chunk_y = get_chunk_coords(x, y)
     modified_chunks.add((chunk_x, chunk_y))
 
 # --- Performance Monitor ---
@@ -358,6 +470,13 @@ def draw_performance_stats(screen, dt, active_chunk_count):
     screen.blit(chunks_surface, (10, 30))
     screen.blit(memory_surface, (10, 50))
 
+# Start chunk generation worker threads
+chunk_gen_threads = []
+for i in range(CHUNK_GEN_THREAD_COUNT):
+    thread = threading.Thread(target=chunk_generation_worker, daemon=True)
+    thread.start()
+    chunk_gen_threads.append(thread)
+
 # --- Boucle Principale du Jeu ---
 if __name__ == '__main__':
     running = True
@@ -370,6 +489,15 @@ if __name__ == '__main__':
     mining_progress = {}  # Dictionary to track mining progress for each block
     mining_animation = {}  # Dictionary to store mining animation progress
     COOL_DOWN_RATE = 0.1  # Rate at which the block cools down (per second)
+
+    # Initialize with some chunks around the player
+    player_chunk_x, player_chunk_y = get_chunk_coords(int(player_x // config.PIXEL_SIZE),
+                                                     int(player_y // config.PIXEL_SIZE))
+                                                     
+    # Start with a small loaded area around the player
+    for dx in range(-3, 4):
+        for dy in range(-3, 4):
+            generate_chunk(player_chunk_x + dx, player_chunk_y + dy)
 
     while running:
         # --- Calcul du Delta Time et Temps Actuel ---
@@ -425,18 +553,18 @@ if __name__ == '__main__':
                 place_x = int(world_x // config.PIXEL_SIZE)
                 place_y = int(world_y // config.PIXEL_SIZE)
 
-                if 0 <= place_y < config.GRID_HEIGHT and 0 <= place_x < config.GRID_WIDTH:
-                    if grid[place_y, place_x] == config.EMPTY:
-                        # Get the block type from the selected slot
-                        if 0 <= selected_slot < HOTBAR_SIZE and hotbar[selected_slot] is not None:
-                            block_type, count = hotbar[selected_slot]
-                            # Place the block
-                            grid[place_y, place_x] = block_type
-                            # Remove the block from the inventory
-                            remove_from_inventory(selected_slot)
-                            active_columns.add(place_x)
-                            next_active_columns.add(place_x)
-                            mark_chunk_modified(place_x, place_y)
+                # Check if the position is valid for placing a block
+                if get_block_at(place_x, place_y) == config.EMPTY:
+                    # Get the block type from the selected slot
+                    if 0 <= selected_slot < HOTBAR_SIZE and hotbar[selected_slot] is not None:
+                        block_type, count = hotbar[selected_slot]
+                        # Place the block
+                        set_block_at(place_x, place_y, block_type)
+                        # Remove the block from the inventory
+                        remove_from_inventory(selected_slot)
+                        # Mark the chunk as modified
+                        chunk_x, chunk_y = get_chunk_coords(place_x, place_y)
+                        mark_chunk_modified(chunk_x, chunk_y)
 
         # --- Mouse Button Pressed ---
         mouse_pressed = pygame.mouse.get_pressed()[0]  # Left mouse button
@@ -466,57 +594,53 @@ if __name__ == '__main__':
                 dig_x = int((player_x + direction_x * i * config.PIXEL_SIZE) // config.PIXEL_SIZE)
                 dig_y = int((player_y + direction_y * i * config.PIXEL_SIZE) // config.PIXEL_SIZE)
 
-                # Check if dig position is within grid bounds
-                if 0 <= dig_y < config.GRID_HEIGHT and 0 <= dig_x < config.GRID_WIDTH:
-                    block_type = grid[dig_y, dig_x]
+                # Check if dig position has a block
+                block_type = get_block_at(dig_x, dig_y)
+                if block_type != config.EMPTY:
                     block_index = (dig_y, dig_x)
-                    if block_type != config.EMPTY:
-                        # Get block hardness
-                        if block_type in BLOCKS:
-                            hardness = BLOCKS[block_type]["hardness"]
-                        else:
-                            continue  # Skip if block type is not in BLOCKS
+                    # Get block hardness
+                    if block_type in BLOCKS:
+                        hardness = BLOCKS[block_type]["hardness"]
+                    else:
+                        continue  # Skip if block type is not in BLOCKS
 
-                        # Initialize mining progress if it doesn't exist
-                        if block_index not in mining_progress:
-                            mining_progress[block_index] = 0
-                            mining_animation[block_index] = 0  # Initialize animation progress
+                    # Initialize mining progress if it doesn't exist
+                    if block_index not in mining_progress:
+                        mining_progress[block_index] = 0
+                        mining_animation[block_index] = 0  # Initialize animation progress
 
-                        # Increase mining progress based on hardness and delta time
-                        mining_progress[block_index] += dt / hardness
-                        mining_animation[block_index] = min(mining_progress[block_index], 1)  # Clamp animation progress
+                    # Increase mining progress based on hardness and delta time
+                    mining_progress[block_index] += dt / hardness
+                    mining_animation[block_index] = min(mining_progress[block_index], 1)  # Clamp animation progress
 
-                        # If mining is complete, generate drops
-                        if mining_progress[block_index] >= 1:
-                            # Determine the drop
-                            dropped_block = config.EMPTY  # Default to empty
-                            if block_type in BLOCKS and "drops" in BLOCKS[block_type]:
-                                drops = BLOCKS[block_type]["drops"]
-                                for drop_id_str, probability in drops.items():
-                                    try:
-                                        drop_id = int(drop_id_str)
-                                    except ValueError:
-                                        print(f"Invalid drop ID: {drop_id_str}")
-                                        continue
+                    # If mining is complete, generate drops
+                    if mining_progress[block_index] >= 1:
+                        # Determine the drop
+                        dropped_block = config.EMPTY  # Default to empty
+                        if block_type in BLOCKS and "drops" in BLOCKS[block_type]:
+                            drops = BLOCKS[block_type]["drops"]
+                            for drop_id_str, probability in drops.items():
+                                try:
+                                    drop_id = int(drop_id_str)
+                                except ValueError:
+                                    print(f"Invalid drop ID: {drop_id_str}")
+                                    continue
 
-                                    if drop_id in BLOCKS and random.random() < probability:
-                                        dropped_block = drop_id
-                                        break  # Only generate one drop
+                                if drop_id in BLOCKS and random.random() < probability:
+                                    dropped_block = drop_id
+                                    break  # Only generate one drop
 
-                            # Add the dropped block to the inventory
-                            if dropped_block != config.EMPTY:
-                                if add_to_inventory(dropped_block):
-                                    grid[dig_y, dig_x] = config.EMPTY  # Set the block to empty only if added to inventory
-                                else:
-                                    dropped_block = block_type # If inventory is full, keep the block
-                                    grid[dig_y, dig_x] = dropped_block
+                        # Add the dropped block to the inventory
+                        if dropped_block != config.EMPTY:
+                            if add_to_inventory(dropped_block):
+                                set_block_at(dig_x, dig_y, config.EMPTY)  # Set the block to empty only if added to inventory
                             else:
-                                grid[dig_y, dig_x] = config.EMPTY
+                                dropped_block = block_type # If inventory is full, keep the block
+                                set_block_at(dig_x, dig_y, dropped_block)
+                        else:
+                            set_block_at(dig_x, dig_y, config.EMPTY)
 
-                            active_columns.add(dig_x)
-                            next_active_columns.add(dig_x)
-                            mining_progress.pop(block_index, None)  # Remove progress
-                            mark_chunk_modified(dig_x, dig_y)
+                        mining_progress.pop(block_index, None)  # Remove progress
                     laser_points.append((dig_x * config.PIXEL_SIZE + config.PIXEL_SIZE // 2 - camera_x,
                                          dig_y * config.PIXEL_SIZE + config.PIXEL_SIZE // 2 - camera_y))
             laser_active = True  # Laser is active while mining
@@ -558,17 +682,29 @@ if __name__ == '__main__':
         camera_y = int(max(0, min(target_camera_y, config.GRID_HEIGHT * config.PIXEL_SIZE - screen_height)))
 
         # --- Simulation ---
-        # Met à jour les animations (place les blocs qui ont fini de tomber)
-        falling_animations, animating_sources, grid, next_active_columns = \
-            simulation.update_animations(current_time_ms, falling_animations, grid, next_active_columns)
+        # For infinite world, we need to disable the old simulation for now
+        # TODO: Update simulation for infinite world
+        if not ENABLE_INFINITE_WORLD:
+            # Met à jour les animations (place les blocs qui ont fini de tomber)
+            falling_animations, animating_sources, grid, next_active_columns = \
+                simulation.update_animations(current_time_ms, falling_animations, grid, next_active_columns)
 
-        # Exécute la simulation de gravité pour les colonnes actives
-        grid, falling_animations, animating_sources, next_active_columns = \
-            simulation.run_gravity_simulation(active_columns, grid, falling_animations, animating_sources,
+            # Exécute la simulation de gravité pour les colonnes actives
+            grid, falling_animations, animating_sources, next_active_columns = \
+                simulation.run_gravity_simulation(active_columns, grid, falling_animations, animating_sources,
                                                current_time_ms, next_active_columns)
 
-        # Met à jour l'ensemble des colonnes actives pour la prochaine frame
-        active_columns = next_active_columns
+            # Met à jour l'ensemble des colonnes actives pour la prochaine frame
+            active_columns = next_active_columns
+
+        # Handle chunk loading/unloading for infinite world
+        if ENABLE_INFINITE_WORLD:
+            # Ensure chunks around the player are loaded
+            ensure_chunks_around_point(player_x, player_y, CHUNK_LOAD_RADIUS)
+            
+            # Periodically unload distant chunks (every second)
+            if int(current_time_precise) != int(last_time):
+                unload_distant_chunks(player_x, player_y)
 
         # --- Rendu ---
         # Draw the background
@@ -580,9 +716,7 @@ if __name__ == '__main__':
         # Render each chunk to a separate surface
         rendered_chunks = {}
         for chunk_x, chunk_y in active_chunks:
-            if (chunk_x, chunk_y) in chunks:
-                chunk = chunks[(chunk_x, chunk_y)]
-                rendered_chunks[(chunk_x, chunk_y)] = render_chunk(chunk_x, chunk_y, chunk, block_positions, camera_x, camera_y, mining_animation, block_surfaces)
+            rendered_chunks[(chunk_x, chunk_y)] = render_chunk(chunk_x, chunk_y, camera_x, camera_y, mining_animation, block_surfaces)
 
         # Blit the rendered chunks to the screen
         for (chunk_x, chunk_y) in active_chunks:
@@ -623,6 +757,11 @@ if __name__ == '__main__':
         clock.tick(config.FPS_CAP)
 
         pygame.display.flip()  # Met à jour l'affichage complet
+
+    # Clean up chunk generation threads before exiting
+    chunk_gen_active = False
+    for thread in chunk_gen_threads:
+        thread.join(timeout=0.5)  # Give threads time to exit
 
     # --- Fin de la Boucle ---
     profiler.disable()

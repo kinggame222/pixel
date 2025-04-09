@@ -12,6 +12,9 @@ PLAYER_SPEED = 200
 
 ANIM_DURATION = 100
 
+# --- Chunk Management ---
+CHUNK_SIZE = 16  # Size of each chunk (in blocks)
+
 # --- Load Block Properties from JSON ---
 with open("blocks.json", "r") as f:
     BLOCK_PROPERTIES = json.load(f)
