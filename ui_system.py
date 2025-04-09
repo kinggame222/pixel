@@ -39,7 +39,7 @@ class MachineUI:
         self.output_slot_x = self.ui_x + 200
         self.output_slot_y = self.ui_y + 75
     
-    def draw(self, screen, machine_data, progress):
+    def draw(self, screen, machine_data, progress, dragged_item=None):
         """Draw the machine UI with input, output slots and progress bar"""
         # Draw background panel
         pygame.draw.rect(screen, (70, 70, 70), 
@@ -60,18 +60,27 @@ class MachineUI:
         title = self.font.render("Ore Processor", True, (255, 255, 255))
         screen.blit(title, (self.ui_x + (self.ui_width - title.get_width()) // 2, preview_y + self.machine_preview_height + 10))
         
-        # Draw input slot (position below the preview)
+        # Get mouse position for drag & drop highlight
+        mouse_x, mouse_y = pygame.mouse.get_pos()
+        
+        # Draw input slot with highlight if being dragged over
         input_slot_y = preview_y + self.machine_preview_height + 40
-        pygame.draw.rect(screen, (50, 50, 50), 
-                        (self.input_slot_x, input_slot_y, self.slot_size, self.slot_size))
+        slot_rect = pygame.Rect(self.input_slot_x, input_slot_y, self.slot_size, self.slot_size)
+        
+        # Regular slot background
+        pygame.draw.rect(screen, (50, 50, 50), slot_rect)
+        
+        # Highlight if dragging item over this slot and it's a valid item for processing
+        if (dragged_item and slot_rect.collidepoint(mouse_x, mouse_y)):
+            pygame.draw.rect(screen, (100, 200, 100), slot_rect, 2)  # Green highlight for valid drop target
+        
+        # Update instance variables to match the new positions
+        self.input_slot_y = input_slot_y
         
         # Draw output slot
         output_slot_y = input_slot_y
         pygame.draw.rect(screen, (50, 50, 50), 
                         (self.output_slot_x, output_slot_y, self.slot_size, self.slot_size))
-        
-        # Update instance variables to match the new positions
-        self.input_slot_y = input_slot_y
         self.output_slot_y = output_slot_y
         
         # Draw labels
@@ -107,7 +116,7 @@ class MachineUI:
         
         # Draw items in slots if they exist
         if machine_data:
-            # Draw input item
+            # Draw input item (if not being dragged)
             if machine_data["input"]:
                 block_type, count = machine_data["input"]
                 if block_type in self.block_surfaces:
@@ -123,7 +132,7 @@ class MachineUI:
                     screen.blit(count_text, (self.input_slot_x + self.slot_size - count_text.get_width() - 5, 
                                            self.input_slot_y + self.slot_size - count_text.get_height() - 5))
             
-            # Draw output item
+            # Draw output item (if not being dragged)
             if machine_data["output"]:
                 block_type, count = machine_data["output"]
                 if block_type in self.block_surfaces:

@@ -386,6 +386,11 @@ hotbar = [None] * HOTBAR_SIZE  # List to store the hotbar items (block_type, cou
 inventory_font = pygame.font.SysFont("Consolas", 14)
 selected_slot = 0  # Initially selected hotbar slot
 
+# --- Drag and Drop System ---
+dragged_item = None  # Stores the currently dragged item (block_type, count)
+drag_source = None   # Where the item was picked up from ("hotbar", "input", "output")
+drag_slot = None     # For hotbar, which slot was it from
+
 def add_to_inventory(block_type):
     # Check if the block_type is already in the hotbar
     for i in range(HOTBAR_SIZE):
@@ -428,8 +433,13 @@ def draw_inventory(screen):
         else:
             pygame.draw.rect(screen, (50, 50, 50), (x, y, slot_size, slot_size))
 
-        # Draw item in slot
-        if hotbar[i] is not None:
+        # If we're dragging an item and hovering over this slot, highlight it as drop target
+        mouse_x, mouse_y = pygame.mouse.get_pos()
+        if dragged_item and x <= mouse_x <= x + slot_size and y <= mouse_y <= y + slot_size:
+            pygame.draw.rect(screen, (100, 200, 100), (x, y, slot_size, slot_size), 2)  # Green highlight
+
+        # Draw item in slot (if not being dragged from this slot)
+        if hotbar[i] is not None and not (drag_source == "hotbar" and drag_slot == i):
             block_type, count = hotbar[i]
 
             if block_type in BLOCKS:
@@ -460,13 +470,37 @@ def draw_inventory(screen):
                 screen.blit(name_surface, (x + (slot_size - name_width) // 2, y - name_height - 5))
             else:
                 item_name = "Unknown"
-                # Draw "Unknown" text above the slot
                 name_surface = inventory_font.render(item_name, True, (255, 100, 100))  # Red for unknown items
                 screen.blit(name_surface, (x + (slot_size - name_surface.get_width()) // 2, y - name_surface.get_height() - 5))
 
             # Draw count at the bottom
             count_surface = inventory_font.render(str(count), True, (255, 255, 255))
             count_rect = count_surface.get_rect(center=(x + slot_size // 2, y + slot_size - 10))  # Position at the bottom
+            screen.blit(count_surface, count_rect)
+
+# Function to draw the dragged item following the mouse cursor
+def draw_dragged_item(screen):
+    if dragged_item:
+        mouse_x, mouse_y = pygame.mouse.get_pos()
+        block_type, count = dragged_item
+        
+        # Draw item centered on mouse
+        slot_size = 40  # Slightly smaller than inventory slots
+        rect = pygame.Rect(
+            mouse_x - slot_size // 2,
+            mouse_y - slot_size // 2,
+            slot_size,
+            slot_size
+        )
+        
+        # Draw block
+        if block_type in BLOCKS:
+            block_color = BLOCKS[block_type]["color"]
+            pygame.draw.rect(screen, block_color, rect)
+            
+            # Draw count
+            count_surface = inventory_font.render(str(count), True, (255, 255, 255))
+            count_rect = count_surface.get_rect(center=(mouse_x, mouse_y + slot_size // 3))
             screen.blit(count_surface, count_rect)
 
 # --- Rendering Functions ---
@@ -762,9 +796,116 @@ if __name__ == '__main__':
                             # Register the machine if it exists but isn't tracked
                             machine_system.register_machine(block_x, block_y)
                             machine_system.open_machine_ui(block_x, block_y)
-                    else:
+                    elif not machine_ui.is_point_in_ui(mouse_x, mouse_y):  # Only close if not clicking on UI
                         # Close machine UI if clicking elsewhere
                         machine_system.close_machine_ui()
+                    
+                    # Handle drag start from inventory
+                    hotbar_x = screen_width // 2 - (HOTBAR_SIZE * 25)
+                    hotbar_y = screen_height - 50
+                    slot_size = 50
+                    slot_spacing = 5
+                    
+                    # Check if clicking on hotbar
+                    for i in range(HOTBAR_SIZE):
+                        slot_x = hotbar_x + i * (slot_size + slot_spacing)
+                        if (slot_x <= mouse_x <= slot_x + slot_size and 
+                            hotbar_y <= mouse_y <= hotbar_y + slot_size and
+                            hotbar[i] is not None):
+                            # Start dragging this item
+                            dragged_item = hotbar[i]
+                            drag_source = "hotbar"
+                            drag_slot = i
+                            # Remove from hotbar temporarily
+                            hotbar[i] = None
+                            break
+                            
+                    # Check if clicking on processor UI slots to start dragging
+                    if machine_system.get_active_machine() is not None and machine_ui.is_point_in_ui(mouse_x, mouse_y):
+                        machine_pos = machine_system.get_active_machine()
+                        machine_data = machine_system.get_machine_data(machine_pos)
+                        slot = machine_ui.get_slot_at_position(mouse_x, mouse_y)
+                        
+                        if slot == "input" and machine_data["input"] is not None:
+                            # Start dragging from input slot
+                            dragged_item = machine_data["input"]
+                            drag_source = "input"
+                            drag_slot = machine_pos
+                            # Remove from machine temporarily
+                            machine_system.take_item_from_machine(machine_pos, output_slot=False)
+                            
+                        elif slot == "output" and machine_data["output"] is not None:
+                            # Start dragging from output slot
+                            dragged_item = machine_data["output"]
+                            drag_source = "output"
+                            drag_slot = machine_pos
+                            # Remove from machine temporarily
+                            machine_system.take_item_from_machine(machine_pos, output_slot=True)
+
+            elif event.type == pygame.MOUSEBUTTONUP:
+                if event.button == 1 and dragged_item:  # Left mouse button release with dragged item
+                    mouse_x, mouse_y = pygame.mouse.get_pos()
+                    
+                    # Check if dropping on hotbar slot
+                    hotbar_x = screen_width // 2 - (HOTBAR_SIZE * 25)
+                    hotbar_y = screen_height - 50
+                    slot_size = 50
+                    slot_spacing = 5
+                    
+                    dropped = False
+                    
+                    # Check for dropping on hotbar
+                    for i in range(HOTBAR_SIZE):
+                        slot_x = hotbar_x + i * (slot_size + slot_spacing)
+                        if (slot_x <= mouse_x <= slot_x + slot_size and 
+                            hotbar_y <= mouse_y <= hotbar_y + slot_size):
+                            
+                            # Handle merging or swapping with existing item
+                            if hotbar[i] is None:
+                                # Empty slot - just place the item
+                                hotbar[i] = dragged_item
+                            elif hotbar[i][0] == dragged_item[0]:
+                                # Same item type - merge
+                                hotbar[i] = (hotbar[i][0], hotbar[i][1] + dragged_item[1])
+                            else:
+                                # Different item - swap
+                                temp = hotbar[i]
+                                hotbar[i] = dragged_item
+                                dragged_item = temp
+                                dropped = True
+                                break
+                            
+                            dropped = True
+                            break
+                    
+                    # Check for dropping on processor UI
+                    if not dropped and machine_system.get_active_machine() is not None and machine_ui.is_point_in_ui(mouse_x, mouse_y):
+                        machine_pos = machine_system.get_active_machine()
+                        slot = machine_ui.get_slot_at_position(mouse_x, mouse_y)
+                        
+                        if slot == "input":
+                            # Try to place in machine input
+                            machine_system.add_item_to_machine(machine_pos, dragged_item[0], dragged_item[1])
+                            dropped = True
+                    
+                    # If not dropped anywhere valid and was originally from a hotbar slot
+                    if not dropped and drag_source == "hotbar" and drag_slot is not None:
+                        # Put it back where it came from
+                        hotbar[drag_slot] = dragged_item
+                    
+                    # If not dropped anywhere valid and was from a machine
+                    if not dropped and drag_source in ["input", "output"] and drag_slot is not None:
+                        # Put it back in the machine
+                        if drag_source == "input":
+                            machine_system.add_item_to_machine(drag_slot, dragged_item[0], dragged_item[1])
+                        else:  # output slot
+                            machine_data = machine_system.get_machine_data(drag_slot)
+                            machine_data["output"] = dragged_item
+                        
+                    # Reset drag state
+                    dragged_item = None
+                    drag_source = None
+                    drag_slot = None
 
         # --- Mouse Button Pressed ---
         mouse_pressed = pygame.mouse.get_pressed()[0]  # Left mouse button
@@ -961,6 +1102,9 @@ if __name__ == '__main__':
             machine_data = machine_system.get_machine_data(active_machine)
             progress = machine_system.get_machine_progress(active_machine)
             machine_ui.draw(screen, machine_data, progress)
+            
+        # Draw dragged item last so it appears on top
+        draw_dragged_item(screen)
 
         # --- Contrôle des FPS ---
         clock.tick(config.FPS_CAP)
