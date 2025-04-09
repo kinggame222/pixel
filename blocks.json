@@ -122,5 +122,39 @@
     "hardness": 1,
     "density": 1000,
     "breakable": false
+  },
+  {
+    "id": 9,
+    "name": "grass",
+    "color": [34, 139, 34],
+    "solid": true,
+    "gravity": false,
+    "hardness": 1,
+    "density": 1200,
+    "breakable": true,
+    "drops": {
+      "3": 0.8,
+      "9": 0.2
+    }
+  },
+  {
+    "id": 10,
+    "name": "lava",
+    "color": [255, 69, 0],
+    "solid": false,
+    "gravity": true,
+    "hardness": 1,
+    "density": 3000,
+    "breakable": false
+  },
+  {
+    "id": 11,
+    "name": "bedrock",
+    "color": [50, 50, 50],
+    "solid": true,
+    "gravity": false,
+    "hardness": -1,
+    "density": 5000,
+    "breakable": false
   }
 ]

@@ -2,8 +2,6 @@ import json
 
 # --- Configuration du Jeu ---
 
-GRID_WIDTH = 1000  # Increased width
-GRID_HEIGHT = 400 # Increased height
 PIXEL_SIZE = 4
 
 PLAYER_WIDTH = 4 * PIXEL_SIZE
@@ -22,16 +20,8 @@ with open("blocks.json", "r") as f:
 # --- Create a dictionary to map block IDs to properties ---
 BLOCKS = {block["id"]: block for block in BLOCK_PROPERTIES}
 
-# --- Constants for Block IDs ---
-EMPTY = 0
-GRAVEL = 1
-STONE = 2
-DIRT = 3
-SAND = 4
-WOOD = 5
-IRON_ORE = 6
-DIAMOND_ORE = 7
-WATER = 8
+# --- Dynamically Create Constants for Block IDs ---
+globals().update({block["name"].upper(): block["id"] for block in BLOCK_PROPERTIES})
 
 # --- Couleurs ---
 COLOR_FPS = (255, 255, 0)

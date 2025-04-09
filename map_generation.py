@@ -139,111 +139,151 @@ def cave_carver(grid, start_x, start_y):
             y += random.randint(-1, 1)
 
 def generate_chunk(chunk_array, chunk_x, chunk_y, seed):
-    """Generates terrain for a single chunk."""
+    """Generates terrain for a single chunk in Terraria style."""
     # Use a fixed seed for the entire world to ensure continuity
     world_seed = seed
-    random.seed(world_seed + hash((chunk_x, chunk_y)) % 100000)  # Only use chunk seed for random features
+    random.seed(world_seed)  # Use the same seed for deterministic generation
     
-    # Create a single perlin noise generator for the entire world
+    # Create a single Perlin noise generator for the entire world
     perlin = PerlinNoise(seed=world_seed)
     
-    # Use very small scale for smooth transitions
-    terrain_scale = 0.005  # Reduced from 0.01 for smoother terrain
-    cave_scale = 0.02     # Scale for cave generation
-    ore_scale = 0.03      # Scale for ore distribution
-    
-    # Global parameters for world generation
-    base_height = 8       # Base terrain height
-    amplitude = 5         # Height variation
+    # Noise scales and parameters
+    surface_scale = 0.02     # Surface terrain frequency (smaller = smoother)
+    cave_scale = 0.05        # Cave system frequency
+    ore_scale = 0.08         # Ore distribution frequency
     
     # Global world position offsets
     world_offset_x = chunk_x * config.CHUNK_SIZE
     world_offset_y = chunk_y * config.CHUNK_SIZE
     
-    # Generate a continuous heightmap across all chunks
+    # ===== STEP 1: Generate the base terrain heightmap =====
+    # This is the key for Terraria-like worlds: we need a consistent heightmap that
+    # doesn't change with vertical chunk position
+    heightmap = []
     for x in range(config.CHUNK_SIZE):
-        # Get real world coordinates
+        world_x = world_offset_x + x
+        # Generate the surface heightmap using ONLY x-coordinate (no y)
+        # This ensures consistent terrain across all vertical chunks
+        noise_val = octave_noise(perlin, 
+                                world_x * surface_scale, 
+                                0,  # IMPORTANT: Fixed y value for consistent terrain
+                                octaves=4, 
+                                persistence=0.5, 
+                                lacunarity=2.0)
+        
+        # Map noise to terrain height with a bias toward the middle
+        # Set a global height that's independent of chunk_y
+        global_base_height = 128  # A fixed global height for the surface
+        height_variation = 32     # Allow height variation
+        
+        # Calculate the absolute surface height in the world
+        absolute_surface_height = global_base_height + int((noise_val * 2 - 1) * height_variation)
+        
+        # Convert to local chunk coordinates
+        local_surface_height = absolute_surface_height - world_offset_y
+        
+        # The heightmap may be outside the chunk bounds
+        # But we still track it for consistent world generation
+        heightmap.append(local_surface_height)
+    
+    # ===== STEP 2: Fill the chunk with appropriate blocks =====
+    for x in range(config.CHUNK_SIZE):
+        surface_height = heightmap[x]
         world_x = world_offset_x + x
         
-        # Generate base terrain (use 2D noise for consistent heightmap)
-        noise_val = octave_noise(perlin, 
-                               world_x * terrain_scale, 
-                               0,  # Use a fixed y for the heightmap generation
-                               octaves=6,
-                               persistence=0.5,
-                               lacunarity=2.0)
-        
-        # Map noise to terrain height (consistent across all chunks)
-        height = int(base_height + (noise_val * 2 - 1) * amplitude)
-        
-        # Ensure height is within chunk bounds (important for continuous terrain)
-        height = min(config.CHUNK_SIZE - 1, max(0, height))
-        
-        # Fill the column with blocks based on height
         for y in range(config.CHUNK_SIZE):
-            # Get absolute world y coordinate
             world_y = world_offset_y + y
             
-            # Determine if this block is below the terrain surface
-            if y >= height:
-                # Use 3D noise for cave generation (continuous across chunks)
-                cave_noise = octave_noise(perlin, 
-                                       world_x * cave_scale,
-                                       world_y * cave_scale,
-                                       octaves=3)
-                
-                # Create caves in deeper areas
-                if cave_noise > 0.65 and y > height + 2:
-                    chunk_array[y, x] = config.EMPTY
+            # Determine if this position is below, at, or above the surface
+            if surface_height >= 0 and y < surface_height:
+                # Below surface
+                depth_from_surface = surface_height - y
+                if depth_from_surface > 3:
+                    chunk_array[y, x] = config.STONE
                 else:
-                    # Surface layer is dirt
-                    if y == height:
-                        chunk_array[y, x] = config.DIRT
-                    else:
-                        # Generate ores using 3D noise (continuous across chunks)
-                        ore_noise = octave_noise(perlin, 
-                                             world_x * ore_scale,
-                                             world_y * ore_scale,
-                                             0.7,  # Different z for ore variation
-                                             octaves=2)
-                        
-                        depth = y - height
-                        # Deeper = more valuable ores
-                        if ore_noise > 0.8 and depth > 8:
-                            chunk_array[y, x] = config.DIAMOND_ORE
-                        elif ore_noise > 0.7 and depth > 4:
-                            chunk_array[y, x] = config.IRON_ORE
-                        elif ore_noise > 0.6 and depth > 2:
-                            chunk_array[y, x] = config.GRAVEL
-                        else:
-                            chunk_array[y, x] = config.STONE
+                    chunk_array[y, x] = config.DIRT
+            elif surface_height >= 0 and y == surface_height:
+                # At surface
+                chunk_array[y, x] = config.GRASS
             else:
-                # Above ground is air
+                # Above surface or surface is outside this chunk
                 chunk_array[y, x] = config.EMPTY
     
-    # Generate trees with a continuous pattern
+    # ===== STEP 3: Generate cave systems =====
+    # Use 3D noise with depth to ensure caves don't duplicate vertically
+    for y in range(config.CHUNK_SIZE):
+        for x in range(config.CHUNK_SIZE):
+            world_x = world_offset_x + x
+            world_y = world_offset_y + y
+            
+            # Only generate caves below the surface
+            local_height = heightmap[x]
+            if chunk_array[y, x] != config.EMPTY and (local_height < 0 or y < local_height - 2):
+                # Use real world depth for consistent caves
+                depth = world_y / 256.0  # Normalize depth
+                
+                # Use different noise frequencies for varied caves
+                cave_noise1 = perlin.noise(world_x * cave_scale, world_y * cave_scale)
+                cave_noise2 = perlin.noise(world_x * cave_scale * 2, world_y * cave_scale * 2 + 100)
+                
+                # Combine noise values for more interesting caves
+                # Make caves bigger at deeper depths
+                cave_threshold = 0.7 - depth * 0.2
+                if cave_noise1 > cave_threshold or cave_noise2 > cave_threshold + 0.1:
+                    chunk_array[y, x] = config.EMPTY
+    
+    # ===== STEP 4: Add ore deposits =====
+    # Use absolute depth to determine ore distribution
+    for y in range(config.CHUNK_SIZE):
+        for x in range(config.CHUNK_SIZE):
+            world_x = world_offset_x + x
+            world_y = world_offset_y + y
+            
+            # Only add ores in stone
+            if chunk_array[y, x] == config.STONE:
+                # Use global depth for consistent ore distribution
+                absolute_depth = world_y
+                normalized_depth = absolute_depth / 256.0  # Normalize to 0-1 range
+                
+                # Generate ore noise
+                ore_noise = perlin.noise(world_x * ore_scale, world_y * ore_scale)
+                
+                # Distribution by depth like in Terraria
+                if normalized_depth > 0.7 and ore_noise > 0.75:
+                    # Diamond appears deep underground
+                    chunk_array[y, x] = config.DIAMOND_ORE
+                elif normalized_depth > 0.4 and ore_noise > 0.7:
+                    # Iron appears in the middle layers
+                    chunk_array[y, x] = config.IRON_ORE
+                elif ore_noise > 0.8:
+                    # Occasional gravel pockets
+                    chunk_array[y, x] = config.GRAVEL
+    
+    # ===== STEP 5: Add surface features =====
+    # Only add surface features if this chunk contains the surface
     for x in range(config.CHUNK_SIZE):
+        local_height = heightmap[x]
+        # Skip if surface is outside this chunk
+        if local_height < 0 or local_height >= config.CHUNK_SIZE:
+            continue
+            
         world_x = world_offset_x + x
         
-        # Find the surface height for this x coordinate
-        surface_y = -1
-        for y in range(config.CHUNK_SIZE):
-            if chunk_array[y, x] != config.EMPTY:
-                surface_y = y - 1  # The block above the first non-air block
-                break
-        
-        # Only place trees on valid surfaces with a deterministic but distributed pattern
-        if surface_y >= 0 and world_x % 11 == 0:  # Use prime number for natural distribution
-            # Deterministic random based on world position (not chunk position)
-            r_val = (world_x * 19373 + world_seed) % 100
-            if r_val < 30:  # 30% chance for a tree
-                tree_height = 3 + (r_val % 3)  # Height of 3-5 blocks
+        # Only place trees on grass blocks
+        if x > 1 and x < config.CHUNK_SIZE - 2 and chunk_array[local_height, x] == config.GRASS:
+            # Deterministic tree placement based on world position
+            tree_seed = (world_x * 761) % 1000
+            random.seed(tree_seed)
+            
+            if random.random() < 0.08:  # 8% chance for a tree
+                # Tree height: 4-7 blocks
+                tree_height = random.randint(4, 7)
                 
-                # Check if tree fits in this chunk
-                if surface_y - tree_height >= 0:
-                    for y in range(surface_y - tree_height, surface_y + 1):
-                        if 0 <= y < config.CHUNK_SIZE:
-                            chunk_array[y, x] = config.WOOD
+                # Place tree trunk if it fits in chunk
+                for y_offset in range(tree_height):
+                    tree_y = local_height - y_offset - 1
+                    if 0 <= tree_y < config.CHUNK_SIZE:
+                        chunk_array[tree_y, x] = config.WOOD
     
     return chunk_array
 
@@ -260,7 +300,7 @@ def add_features(chunk_array, chunk_x, chunk_y, terrain_height):
             tree_height = random.randint(3, 6)
             top_y = terrain_height[x] - 1
             
-            # Make sure tree fits in chunk
+            
             if top_y - tree_height >= 0:
                 # Place tree trunk
                 for y in range(top_y - tree_height, top_y + 1):
@@ -280,6 +320,12 @@ def add_features(chunk_array, chunk_x, chunk_y, terrain_height):
             world_y = chunk_y * config.CHUNK_SIZE + y
             cave_noise = octave_noise(perlin, world_x * 0.05, world_y * 0.05, octaves=2)
             
-            # Create caves where noise value is high
-            if cave_noise > 0.75:
+            if cave_noise > 0.85:
                 chunk_array[y, x] = config.EMPTY
+                # Carve out a small cave 
+                for dx in range(-1, 2):
+                    for dy in range(-1, 2):
+                        if 0 <= x + dx < config.CHUNK_SIZE and 0 <= y + dy < config.CHUNK_SIZE:
+                            chunk_array[y + dy, x + dx] = config.EMPTY
+    return chunk_array
+

@@ -6,8 +6,9 @@ import sys  # Pour quitter proprement
 import random  # Pour la génération procédurale
 import json  # Import the json module
 from threading import Thread
-from queue import Queue
+from queue import Queue, Empty  # Import Empty directly for clarity
 import threading
+import os  # For file operations
 
 # Importe les modules locaux
 import config
@@ -22,12 +23,12 @@ ENABLE_CHUNK_CACHE = True  # Enable chunk caching for performance
 MAX_ACTIVE_CHUNKS = 200  # Maximum active chunks to render
 PERFORMANCE_MONITOR = True  # Show performance stats 
 VIEW_DISTANCE_MULTIPLIER = 2.0  # Multiplier to increase view distance
-CHUNK_LOAD_RADIUS = 5  # Radius of chunks to keep loaded around player
+CHUNK_LOAD_RADIUS = 5  # Radius of chunkds to keep loaded around player
 
 # --- Infinite World Settings ---
 ENABLE_INFINITE_WORLD = True  # Enable infinite world generation
 CHUNK_GEN_THREAD_COUNT = 2  # Number of threads for chunk generation
-CHUNK_UNLOAD_DISTANCE = 10  # Distance in chunks to unload chunks
+CHUNK_UNLOAD_DISTANCE = 5  # Distance in chunks to unload chunks
 
 # --- Chunk Cache ---
 chunk_cache = {}  # Dictionary to store rendered chunk surfaces
@@ -38,11 +39,60 @@ loaded_chunks = {}  # Dictionary to store loaded chunk data
 chunk_gen_queue = Queue()
 chunk_gen_active = True  # Flag to control chunk generation threads
 
+SAVE_FILE = "world.json"  # Path to the save file
+
+def save_map_to_json():
+    """Saves the current map (loaded chunks) to a JSON file."""
+    world_data = []
+    for (chunk_x, chunk_y), chunk in loaded_chunks.items():
+        chunk_data = {
+            "chunk_x": chunk_x,
+            "chunk_y": chunk_y,
+            "blocks": chunk.tolist()  # Convert numpy array to a list for JSON serialization
+        }
+        world_data.append(chunk_data)
+    
+    with open(SAVE_FILE, "w") as f:
+        json.dump(world_data, f, indent=4)
+    print(f"World saved to {SAVE_FILE}")
+
+def load_map_from_json():
+    """Loads the map (chunks) from a JSON file."""
+    if not os.path.exists(SAVE_FILE):
+        print(f"No save file found at {SAVE_FILE}")
+        return
+    
+    with open(SAVE_FILE, "r") as f:
+        world_data = json.load(f)
+    
+    for chunk_data in world_data:
+        chunk_x = chunk_data["chunk_x"]
+        chunk_y = chunk_data["chunk_y"]
+        blocks = np.array(chunk_data["blocks"], dtype=np.uint8)  # Convert list back to numpy array
+        loaded_chunks[(chunk_x, chunk_y)] = blocks
+    print(f"World loaded from {SAVE_FILE}")
+
+def regenerate_map():
+    """Clears the current map and regenerates it."""
+    global loaded_chunks, chunk_cache, modified_chunks
+    loaded_chunks.clear()  # Clear all loaded chunks
+    chunk_cache.clear()  # Clear the chunk rendering cache
+    modified_chunks.clear()  # Clear the modified chunks set
+    print("Map cleared. Regenerating...")
+    
+    # Regenerate chunks around the player
+    player_chunk_x, player_chunk_y = get_chunk_coords(int(player_x // config.PIXEL_SIZE),
+                                                      int(player_y // config.PIXEL_SIZE))
+    for dx in range(-CHUNK_LOAD_RADIUS, CHUNK_LOAD_RADIUS + 1):
+        for dy in range(-CHUNK_LOAD_RADIUS, CHUNK_LOAD_RADIUS + 1):
+            generate_chunk(player_chunk_x + dx, player_chunk_y + dy)
+    print("Map regenerated.")
+
 # --- Initialisation Pygame ---
 pygame.init()
-# Utilise les dimensions de config.py
-screen_width = config.GRID_WIDTH * config.PIXEL_SIZE // 2  # Exemple : fenêtre plus petite que la grille totale
-screen_height = config.GRID_HEIGHT * config.PIXEL_SIZE // 2
+# Use default screen dimensions for the initial window size
+screen_width = 800  # Default screen width in pixels
+screen_height = 600  # Default screen height in pixels
 screen = pygame.display.set_mode((screen_width, screen_height), pygame.RESIZABLE)  # Ajout de pygame.RESIZABLE
 pygame.display.set_caption(config.WINDOW_TITLE)
 fps_font = pygame.font.SysFont("Consolas", 18)
@@ -62,11 +112,11 @@ def get_chunk_coords(x, y):
 def get_local_block_coords(x, y):
     """Returns the local coordinates within a chunk for a given block coordinate."""
     local_x = x % CHUNK_SIZE
-    if x < 0 and local_x != 0:
-        local_x = CHUNK_SIZE + local_x
+    if local_x < 0:
+        local_x += CHUNK_SIZE
     local_y = y % CHUNK_SIZE
-    if y < 0 and local_y != 0:
-        local_y = CHUNK_SIZE + local_y
+    if local_y < 0:
+        local_y += CHUNK_SIZE
     return local_x, local_y
 
 def get_block_at(x, y):
@@ -123,7 +173,7 @@ def chunk_generation_worker():
             
             # Mark the task as done
             chunk_gen_queue.task_done()
-        except Queue.Empty:
+        except Empty:  # Use the correct Empty exception
             # Queue is empty, just continue
             pass
         except Exception as e:
@@ -140,7 +190,7 @@ def ensure_chunks_around_point(x, y, radius):
             chunk_y = center_chunk_y + dy
             
             if (chunk_x, chunk_y) not in loaded_chunks:
-                chunk_gen_queue.put((chunk_x, chunk_y))
+                chunk_gen_queue.put((chunk_x, chunk_y))  # Queue chunk for generation
 
 def unload_distant_chunks(player_x, player_y):
     """Unloads chunks that are too far from the player."""
@@ -248,13 +298,26 @@ for block_id, block in BLOCKS.items():
 # --- Initialisation de l'état du jeu ---
 
 # Seed pour la génération procédurale
-SEED = 12345  # Change this to generate different maps
+SEED = 1  # Change this to generate different maps
 random.seed(SEED)
 np.random.seed(SEED)
 
-# Position initiale du joueur (au centre de la grille, en haut)
-player_x = float(config.GRID_WIDTH * config.PIXEL_SIZE // 2)
-player_y = float(config.GRID_HEIGHT * config.PIXEL_SIZE // 4)
+# Adjust the player's spawn position to ensure it starts above the ground
+def find_spawn_position():
+    """Finds a safe spawn position for the player above the ground."""
+    spawn_chunk_x, spawn_chunk_y = 0, 0  # Start at the origin chunk
+    if (spawn_chunk_x, spawn_chunk_y) not in loaded_chunks:
+        generate_chunk(spawn_chunk_x, spawn_chunk_y)
+    
+    chunk = loaded_chunks[(spawn_chunk_x, spawn_chunk_y)]
+    for y in range(CHUNK_SIZE):
+        for x in range(CHUNK_SIZE):
+            if chunk[y, x] == config.EMPTY:
+                return x * config.PIXEL_SIZE, y * config.PIXEL_SIZE
+    return 0, 0  # Default to (0, 0) if no empty space is found
+
+# Set the player's initial position
+player_x, player_y = find_spawn_position()
 
 # Position initiale de la caméra (centrée sur le joueur)
 camera_x = player_x - screen_width // 2
@@ -262,7 +325,7 @@ camera_y = player_y - screen_height // 2
 
 # Variables de simulation
 falling_animations = []  # Liste des animations en cours
-active_columns = set(range(config.GRID_WIDTH))
+active_columns = set()
 animating_sources = set()  # Ensemble des sources (r,c) en animation
 next_active_columns = set()  # Initialize next_active_columns
 
@@ -274,13 +337,12 @@ JETPACK_SPEED = 200  # Vitesse du jetpack
 
 # --- Fonction d'aide pour contraindre le joueur ---
 def clamp_player_position(px, py):
-    # Keep player within the grid bounds
-    px = max(0, min(px, config.GRID_WIDTH * config.PIXEL_SIZE - config.PLAYER_WIDTH))
-    py = max(0, min(py, config.GRID_HEIGHT * config.PIXEL_SIZE - config.PLAYER_HEIGHT))
-
+    """Remove clamping logic since the world is infinite."""
     return px, py
 
 # --- Collision Detection ---
+PLAYER_COLLISION_ENABLED = True
+
 def is_solid_block(x, y):
     """Checks if the block at the given coordinates is solid."""
     block_type = get_block_at(x, y)
@@ -289,6 +351,10 @@ def is_solid_block(x, y):
     return False
 
 def check_collision(px, py, move_x, move_y):
+    """Checks for collisions with solid blocks."""
+    if not PLAYER_COLLISION_ENABLED:
+        return False  # Skip collision checks if collisions are disabled
+
     player_width = config.PLAYER_WIDTH
     player_height = config.PLAYER_HEIGHT
 
@@ -403,16 +469,13 @@ def render_chunk(chunk_x, chunk_y, camera_x, camera_y, mining_animation, block_s
                 continue
             
             # Convert chunk-local coordinates to world coordinates
-            world_x = chunk_x * CHUNK_SIZE + x
-            world_y = chunk_y * CHUNK_SIZE + y
-            
             block_x = x * config.PIXEL_SIZE
             block_y = y * config.PIXEL_SIZE
             
             # Group blocks by type for batch rendering
-            if (world_y, world_x) in mining_animation:
+            if (y, x) in mining_animation:
                 # Mining animation blocks need individual rendering
-                animation_progress = mining_animation[(world_y, world_x)]
+                animation_progress = mining_animation[(y, x)]
                 red_intensity = int(255 * animation_progress)
                 animated_surface = pygame.Surface((config.PIXEL_SIZE, config.PIXEL_SIZE))
                 block_color = BLOCKS[block_type]["color"]
@@ -484,6 +547,9 @@ if __name__ == '__main__':
     profiler.enable()
     last_time = time.time()
 
+    # Load the map if a save file exists
+    load_map_from_json()
+
     laser_active = False
     laser_points = []  # List of points for the laser beam
     mining_progress = {}  # Dictionary to track mining progress for each block
@@ -492,8 +558,8 @@ if __name__ == '__main__':
 
     # Initialize with some chunks around the player
     player_chunk_x, player_chunk_y = get_chunk_coords(int(player_x // config.PIXEL_SIZE),
-                                                     int(player_y // config.PIXEL_SIZE))
-                                                     
+                                                      int(player_y // config.PIXEL_SIZE))
+                                                      
     # Start with a small loaded area around the player
     for dx in range(-3, 4):
         for dy in range(-3, 4):
@@ -510,15 +576,26 @@ if __name__ == '__main__':
         # --- Gestion des Événements ---
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
+                # Save the map before quitting
+                save_map_to_json()
                 running = False
-            elif event.type == pygame.VIDEORESIZE:  # Gestion du redimensionnement
-                screen_width, screen_height = event.size
-                screen = pygame.display.set_mode((screen_width, screen_height), pygame.RESIZABLE)
-                # Mise à jour de la caméra pour rester centrée sur le joueur
-                camera_x = player_x - screen_width // 2
-                camera_y = player_y - screen_height // 2
-            elif event.type == pygame.KEYDOWN:  # Check for key presses
-                if event.key == pygame.K_1:  # Number keys to select hotbar slots
+            elif event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_o:  # Press 'O' to manually save the map
+                    save_map_to_json()
+                elif event.key == pygame.K_l:  # Press 'L' to manually load the map
+                    load_map_from_json()
+                elif event.key == pygame.K_r:  # Press 'R' to regenerate the map
+                    regenerate_map()
+                elif event.key == pygame.K_c:  # Press 'C' to toggle player collision
+                    PLAYER_COLLISION_ENABLED = not PLAYER_COLLISION_ENABLED
+                    print(f"Player collision {'enabled' if PLAYER_COLLISION_ENABLED else 'disabled'}.")
+                elif event.key == pygame.VIDEORESIZE:  # Gestion du redimensionnement
+                    screen_width, screen_height = event.size
+                    screen = pygame.display.set_mode((screen_width, screen_height), pygame.RESIZABLE)
+                    # Mise à jour de la caméra pour rester centrée sur le joueur
+                    camera_x = player_x - screen_width // 2
+                    camera_y = player_y - screen_height // 2
+                elif event.key == pygame.K_1:  # Number keys to select hotbar slots
                     selected_slot = 0
                 elif event.key == pygame.K_2:
                     selected_slot = 1
@@ -677,9 +754,8 @@ if __name__ == '__main__':
         # Fait suivre la caméra le joueur
         target_camera_x = player_x - screen_width / 2
         target_camera_y = player_y - screen_height / 2
-        # Contraint la caméra aux limites du monde
-        camera_x = int(max(0, min(target_camera_x, config.GRID_WIDTH * config.PIXEL_SIZE - screen_width)))
-        camera_y = int(max(0, min(target_camera_y, config.GRID_HEIGHT * config.PIXEL_SIZE - screen_height)))
+        camera_x = int(target_camera_x)
+        camera_y = int(target_camera_y)
 
         # --- Simulation ---
         # For infinite world, we need to disable the old simulation for now
@@ -744,7 +820,7 @@ if __name__ == '__main__':
         # Draw laser beam
         if laser_active:
             # Draw the laser beam
-            if laser_points:
+            if len(laser_points) >= 2:  # Ensure there are at least two points
                 pygame.draw.lines(screen, (255, 0, 0), False, laser_points, 3)
 
         # Draw inventory
