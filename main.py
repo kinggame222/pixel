@@ -14,6 +14,8 @@ import os  # For file operations
 import config
 import simulation
 import map_generation  # Import the map generation module
+from machine_system import MachineSystem
+from ui_system import MachineUI
 
 # --- Chunk Management ---
 CHUNK_SIZE = 16  # Size of each chunk (in blocks)
@@ -23,12 +25,12 @@ ENABLE_CHUNK_CACHE = True  # Enable chunk caching for performance
 MAX_ACTIVE_CHUNKS = 200  # Maximum active chunks to render
 PERFORMANCE_MONITOR = True  # Show performance stats 
 VIEW_DISTANCE_MULTIPLIER = 2.0  # Multiplier to increase view distance
-CHUNK_LOAD_RADIUS = 10  # Radius of chunkds to keep loaded around player
+CHUNK_LOAD_RADIUS = 5  # Radius of chunkds to keep loaded around player
 
 # --- Infinite World Settings ---
 ENABLE_INFINITE_WORLD = True  # Enable infinite world generation
 CHUNK_GEN_THREAD_COUNT = 2  # Number of threads for chunk generation
-CHUNK_UNLOAD_DISTANCE = 10  # Distance in chunks to unload chunks
+CHUNK_UNLOAD_DISTANCE = 5  # Distance in chunks to unload chunks
 
 # --- Chunk Cache ---
 chunk_cache = {}  # Dictionary to store rendered chunk surfaces
@@ -295,6 +297,10 @@ for block_id, block in BLOCKS.items():
         surface.fill(block["color"])
         block_surfaces[block_id] = surface
 
+# Initialize the machine system and UI
+machine_system = MachineSystem(get_block_at, set_block_at)
+machine_ui = None  # We'll initialize this after pygame setup
+
 # --- Initialisation de l'état du jeu ---
 
 # Seed pour la génération procédurale
@@ -430,8 +436,33 @@ def draw_inventory(screen):
                 block_color = BLOCKS[block_type]["color"]
                 pygame.draw.rect(screen, block_color, (x + 5, y + 5, slot_size - 10, slot_size - 10))  # Draw block color
                 item_name = BLOCKS[block_type]["name"]
+                
+                # Draw item name above the slot
+                name_surface = inventory_font.render(item_name, True, (255, 255, 255))
+                
+                # Create background for text to improve readability
+                name_width = name_surface.get_width()
+                name_height = name_surface.get_height()
+                bg_rect = pygame.Rect(
+                    x + (slot_size - name_width) // 2 - 2,  # Center horizontally with 2px padding
+                    y - name_height - 5,  # Position above slot with 5px gap
+                    name_width + 4,  # Add 4px padding (2px on each side)
+                    name_height
+                )
+                
+                # Draw semi-transparent background for text
+                bg_surface = pygame.Surface((bg_rect.width, bg_rect.height))
+                bg_surface.set_alpha(180)  # Semi-transparent
+                bg_surface.fill((30, 30, 30))  # Dark gray
+                screen.blit(bg_surface, bg_rect.topleft)
+                
+                # Draw name text
+                screen.blit(name_surface, (x + (slot_size - name_width) // 2, y - name_height - 5))
             else:
                 item_name = "Unknown"
+                # Draw "Unknown" text above the slot
+                name_surface = inventory_font.render(item_name, True, (255, 100, 100))  # Red for unknown items
+                screen.blit(name_surface, (x + (slot_size - name_surface.get_width()) // 2, y - name_surface.get_height() - 5))
 
             # Draw count at the bottom
             count_surface = inventory_font.render(str(count), True, (255, 255, 255))
@@ -471,6 +502,36 @@ def render_chunk(chunk_x, chunk_y, camera_x, camera_y, mining_animation, block_s
             # Convert chunk-local coordinates to world coordinates
             block_x = x * config.PIXEL_SIZE
             block_y = y * config.PIXEL_SIZE
+            
+            # Check if this is a machine (special rendering)
+            world_x = chunk_x * CHUNK_SIZE + x
+            world_y = chunk_y * CHUNK_SIZE + y
+            
+            if block_type == config.ORE_PROCESSOR and machine_system.is_machine_position(world_x, world_y):
+                # Skip if this is not the origin point of the machine
+                if not (world_x, world_y) in machine_system.machines:
+                    continue
+                
+                # Get machine dimensions
+                width, height = machine_system.get_machine_size(config.ORE_PROCESSOR)
+                
+                # Create a special surface for the machine
+                machine_surface = pygame.Surface((width * config.PIXEL_SIZE, height * config.PIXEL_SIZE))
+                machine_color = BLOCKS[block_type]["color"]
+                machine_surface.fill(machine_color)
+                
+                # Add visual details to the machine
+                pygame.draw.rect(machine_surface, (100, 60, 140), (2, 2, width * config.PIXEL_SIZE - 4, height * config.PIXEL_SIZE // 3))
+                pygame.draw.rect(machine_surface, (80, 80, 80), (width * config.PIXEL_SIZE // 4, height * config.PIXEL_SIZE // 2, 
+                                                           width * config.PIXEL_SIZE // 2, height * config.PIXEL_SIZE // 3))
+                
+                # Only render the part of the machine that fits in this chunk
+                visible_width = min(width, CHUNK_SIZE - x) * config.PIXEL_SIZE
+                visible_height = min(height, CHUNK_SIZE - y) * config.PIXEL_SIZE
+                
+                if visible_width > 0 and visible_height > 0:
+                    surface.blit(machine_surface, (block_x, block_y), (0, 0, visible_width, visible_height))
+                continue
             
             # Group blocks by type for batch rendering
             if (y, x) in mining_animation:
@@ -540,6 +601,9 @@ for i in range(CHUNK_GEN_THREAD_COUNT):
     thread.start()
     chunk_gen_threads.append(thread)
 
+# Initialize the machine UI
+machine_ui = MachineUI(screen_width, screen_height, block_surfaces)
+
 # --- Boucle Principale du Jeu ---
 if __name__ == '__main__':
     running = True
@@ -595,6 +659,8 @@ if __name__ == '__main__':
                     # Mise à jour de la caméra pour rester centrée sur le joueur
                     camera_x = player_x - screen_width // 2
                     camera_y = player_y - screen_height // 2
+                    # Update UI positioning
+                    machine_ui.update_screen_size(screen_width, screen_height)
                 elif event.key == pygame.K_1:  # Number keys to select hotbar slots
                     selected_slot = 0
                 elif event.key == pygame.K_2:
@@ -621,27 +687,84 @@ if __name__ == '__main__':
                     print(f"View distance: {VIEW_DISTANCE_MULTIPLIER:.1f}x")
                 elif event.key == pygame.K_i:  # Toggle debug mode with F12 key
                     DEBUG_MODE = not DEBUG_MODE
-            elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 3:  # Right mouse button
-                # Place block from selected slot
+                elif event.key == pygame.K_p:  # Ajoutez cette condition dans la section des événements keyboard
+                    # Ajouter le processeur à l'inventaire en appuyant sur 'P'
+                    add_to_inventory(config.ORE_PROCESSOR)
+                    print("Processeur de minerai ajouté à l'inventaire!")
+            elif event.type == pygame.MOUSEBUTTONDOWN:
                 mouse_x, mouse_y = pygame.mouse.get_pos()
                 world_x = mouse_x + camera_x
                 world_y = mouse_y + camera_y
+                block_x = int(world_x // config.PIXEL_SIZE)
+                block_y = int(world_y // config.PIXEL_SIZE)
 
-                place_x = int(world_x // config.PIXEL_SIZE)
-                place_y = int(world_y // config.PIXEL_SIZE)
-
-                # Check if the position is valid for placing a block
-                if get_block_at(place_x, place_y) == config.EMPTY:
-                    # Get the block type from the selected slot
-                    if 0 <= selected_slot < HOTBAR_SIZE and hotbar[selected_slot] is not None:
-                        block_type, count = hotbar[selected_slot]
-                        # Place the block
-                        set_block_at(place_x, place_y, block_type)
-                        # Remove the block from the inventory
-                        remove_from_inventory(selected_slot)
-                        # Mark the chunk as modified
-                        chunk_x, chunk_y = get_chunk_coords(place_x, place_y)
-                        mark_chunk_modified(chunk_x, chunk_y)
+                if event.button == 3:  # Right mouse button
+                    # Check if clicking on UI if machine is open
+                    if machine_system.get_active_machine() is not None and machine_ui.is_point_in_ui(mouse_x, mouse_y):
+                        machine_pos = machine_system.get_active_machine()
+                        slot = machine_ui.get_slot_at_position(mouse_x, mouse_y)
+                        
+                        if slot == "input":
+                            # Place selected item from hotbar into machine input
+                            if selected_slot < HOTBAR_SIZE and hotbar[selected_slot] is not None:
+                                block_type, count = hotbar[selected_slot]
+                                if machine_system.add_item_to_machine(machine_pos, block_type, 1):
+                                    remove_from_inventory(selected_slot)
+                        elif slot == "output":
+                            # Take item from machine output slot
+                            item = machine_system.take_item_from_machine(machine_pos, output_slot=True)
+                            if item:
+                                block_type, count = item
+                                add_to_inventory(block_type)
+                    else:
+                        # Check if we're placing a machine
+                        if get_block_at(block_x, block_y) == config.EMPTY:
+                            if selected_slot < HOTBAR_SIZE and hotbar[selected_slot] is not None:
+                                block_type, count = hotbar[selected_slot]
+                                
+                                # Check if we're placing a machine that needs special handling
+                                if block_type == config.ORE_PROCESSOR:
+                                    # Get machine dimensions
+                                    width, height = machine_system.get_machine_size(config.ORE_PROCESSOR)
+                                    
+                                    # Check if there's enough space
+                                    space_available = True
+                                    for dx in range(width):
+                                        for dy in range(height):
+                                            check_x = block_x + dx
+                                            check_y = block_y + dy
+                                            if get_block_at(check_x, check_y) != config.EMPTY:
+                                                space_available = False
+                                                break
+                                        if not space_available:
+                                            break
+                                    
+                                    if space_available:
+                                        # Place the machine (only at origin point)
+                                        set_block_at(block_x, block_y, block_type)
+                                        machine_system.register_machine(block_x, block_y)
+                                        remove_from_inventory(selected_slot)
+                                        chunk_x, chunk_y = get_chunk_coords(block_x, block_y)
+                                        mark_chunk_modified(chunk_x, chunk_y)
+                                else:
+                                    # Normal block placement
+                                    set_block_at(block_x, block_y, block_type)
+                                    remove_from_inventory(selected_slot)
+                                    chunk_x, chunk_y = get_chunk_coords(block_x, block_y)
+                                    mark_chunk_modified(chunk_x, chunk_y)
+                elif event.button == 1:  # Left mouse button
+                    # Check if clicking on a machine
+                    if get_block_at(block_x, block_y) == config.ORE_PROCESSOR or machine_system.is_machine_position(block_x, block_y):
+                        machine_origin = machine_system.get_machine_origin(block_x, block_y)
+                        if machine_origin:
+                            machine_system.open_machine_ui(*machine_origin)
+                        else:
+                            # Register the machine if it exists but isn't tracked
+                            machine_system.register_machine(block_x, block_y)
+                            machine_system.open_machine_ui(block_x, block_y)
+                    else:
+                        # Close machine UI if clicking elsewhere
+                        machine_system.close_machine_ui()
 
         # --- Mouse Button Pressed ---
         mouse_pressed = pygame.mouse.get_pressed()[0]  # Left mouse button
@@ -782,6 +905,9 @@ if __name__ == '__main__':
             if int(current_time_precise) != int(last_time):
                 unload_distant_chunks(player_x, player_y)
 
+        # Update machines
+        machine_system.update()
+
         # --- Rendu ---
         # Draw the background
         screen.fill((0, 0, 0)) # Black background
@@ -828,6 +954,13 @@ if __name__ == '__main__':
 
         # Draw performance stats
         draw_performance_stats(screen, dt, len(active_chunks))
+
+        # Draw the machine UI if active
+        active_machine = machine_system.get_active_machine()
+        if active_machine:
+            machine_data = machine_system.get_machine_data(active_machine)
+            progress = machine_system.get_machine_progress(active_machine)
+            machine_ui.draw(screen, machine_data, progress)
 
         # --- Contrôle des FPS ---
         clock.tick(config.FPS_CAP)

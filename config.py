@@ -23,6 +23,11 @@ BLOCKS = {block["id"]: block for block in BLOCK_PROPERTIES}
 # --- Dynamically Create Constants for Block IDs ---
 globals().update({block["name"].upper(): block["id"] for block in BLOCK_PROPERTIES})
 
+# These will be automatically generated from blocks.json now:
+# ORE_PROCESSOR = 12
+# IRON_BAR = 13
+# DIAMOND_CRYSTAL = 14
+
 # --- Couleurs ---
 COLOR_FPS = (255, 255, 0)
 COLOR_PLAYER = (0, 0, 255)

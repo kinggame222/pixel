@@ -156,5 +156,45 @@
     "hardness": -1,
     "density": 5000,
     "breakable": false
+  },
+  {
+    "id": 12,
+    "name": "ore_processor",
+    "color": [150, 100, 200],
+    "solid": true,
+    "gravity": false,
+    "hardness": 8,
+    "density": 3000,
+    "breakable": true,
+    "is_machine": true,
+    "drops": {
+      "12": 1.0
+    }
+  },
+  {
+    "id": 13,
+    "name": "iron_bar",
+    "color": [220, 220, 220],
+    "solid": true,
+    "gravity": false,
+    "hardness": 4,
+    "density": 2000,
+    "breakable": true,
+    "drops": {
+      "13": 1.0
+    }
+  },
+  {
+    "id": 14,
+    "name": "diamond_crystal",
+    "color": [120, 230, 230],
+    "solid": true,
+    "gravity": false,
+    "hardness": 5,
+    "density": 1800,
+    "breakable": true,
+    "drops": {
+      "14": 1.0
+    }
   }
 ]
