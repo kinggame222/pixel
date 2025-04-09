@@ -23,12 +23,12 @@ ENABLE_CHUNK_CACHE = True  # Enable chunk caching for performance
 MAX_ACTIVE_CHUNKS = 200  # Maximum active chunks to render
 PERFORMANCE_MONITOR = True  # Show performance stats 
 VIEW_DISTANCE_MULTIPLIER = 2.0  # Multiplier to increase view distance
-CHUNK_LOAD_RADIUS = 5  # Radius of chunkds to keep loaded around player
+CHUNK_LOAD_RADIUS = 10  # Radius of chunkds to keep loaded around player
 
 # --- Infinite World Settings ---
 ENABLE_INFINITE_WORLD = True  # Enable infinite world generation
 CHUNK_GEN_THREAD_COUNT = 2  # Number of threads for chunk generation
-CHUNK_UNLOAD_DISTANCE = 5  # Distance in chunks to unload chunks
+CHUNK_UNLOAD_DISTANCE = 10  # Distance in chunks to unload chunks
 
 # --- Chunk Cache ---
 chunk_cache = {}  # Dictionary to store rendered chunk surfaces
@@ -91,8 +91,8 @@ def regenerate_map():
 # --- Initialisation Pygame ---
 pygame.init()
 # Use default screen dimensions for the initial window size
-screen_width = 800  # Default screen width in pixels
-screen_height = 600  # Default screen height in pixels
+screen_width = 1200  # Default screen width in pixels
+screen_height = 1000  # Default screen height in pixels
 screen = pygame.display.set_mode((screen_width, screen_height), pygame.RESIZABLE)  # Ajout de pygame.RESIZABLE
 pygame.display.set_caption(config.WINDOW_TITLE)
 fps_font = pygame.font.SysFont("Consolas", 18)
