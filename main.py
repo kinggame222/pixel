@@ -5,14 +5,26 @@ import sys
 import os
 import random
 import numpy as np
+import threading
+import queue
+import json
+import math
+import copy
+
+import gc
+import traceback
 
 # Import core modules
 from core import config
-from world.chunks import (
-    get_block_at, set_block_at, generate_chunk, get_chunk_coords, start_chunk_workers,
-    stop_chunk_workers, ensure_chunks_around_point, unload_distant_chunks, get_active_chunks,
-    save_world_to_file, load_world_from_file, loaded_chunks, mark_chunk_modified, chunk_cache
-)
+
+# Import the queue explicitly from chunks 
+from world.chunks import (chunk_generation_queue, loaded_chunks, modified_chunks, 
+                         chunk_lock, get_chunk_coords, generate_chunk, 
+                         ensure_chunks_around_point, unload_distant_chunks, 
+                         get_active_chunks, set_block_at, get_block_at,
+                         mark_chunk_modified, start_chunk_workers, stop_chunk_workers,
+                         save_world_to_file, load_world_from_file)
+
 from entities.player import Player
 from ui.inventory import Inventory
 from ui.machine_ui import MachineUI
@@ -25,17 +37,18 @@ from systems.conveyor_system import ConveyorSystem
 from ui.storage_ui import StorageUI
 from systems.multi_block_system import MultiBlockSystem
 from systems.extractor_system import ExtractorSystem
+from utils.background import generate_clouds, generate_hills, generate_stars, draw_background
 
 # --- Game Settings ---
 DEBUG_MODE = True          # Enable debug mode
 SAVE_FILE = "world.json"   # Path to the save file
-SEED = 1                   # World generation seedd
+SEED = 1                  # World generation seedd
 ENABLE_CHUNK_CACHE = True  # Enable chunk caching for performanced
 MAX_ACTIVE_CHUNKS = 200    # Maximum active chunks to render
 PERFORMANCE_MONITOR = True # Show performance stats 
 VIEW_DISTANCE_MULTIPLIER = 2.0  # View distance multiplier
-CHUNK_LOAD_RADIUS = 5      # Radius of chunks to keep loaded around player
-CHUNK_UNLOAD_DISTANCE = 5  # Distance in chunks to unload chunks
+CHUNK_LOAD_RADIUS = 2     # Smaller initial radius for faster generation
+CHUNK_UNLOAD_DISTANCE = 2  # Keep more chunks loaded
 CHUNK_GEN_THREAD_COUNT = 2 # Number of threads for chunk generation
 ENABLE_INFINITE_WORLD = True  # Enable infinite world generation
 
@@ -43,16 +56,46 @@ def find_spawn_position():
     """Finds a safe spawn position for the player above the ground."""
     spawn_chunk_x, spawn_chunk_y = 0, 0  # Start at the origin chunk
     
-    if (spawn_chunk_x, spawn_chunk_y) not in loaded_chunks:
-        generate_chunk(spawn_chunk_x, spawn_chunk_y, SEED)
+    # Make sure the origin chunk exists - directly check and create if needed
+    with chunk_lock:
+        if (0, 0) not in loaded_chunks:
+            print("Origin chunk missing in find_spawn_position, creating one...")
+            # Create a simple chunk if it's missing
+            chunk = np.zeros((config.CHUNK_SIZE, config.CHUNK_SIZE), dtype=np.int32)
+            chunk[:config.CHUNK_SIZE//2, :] = config.EMPTY  # Top half is empty
+            chunk[config.CHUNK_SIZE//2:, :] = config.DIRT   # Bottom half is dirt
+            loaded_chunks[(spawn_chunk_x, spawn_chunk_y)] = chunk
+            modified_chunks.add((spawn_chunk_x, spawn_chunk_y))
+            print("Created emergency origin chunk!")
+        
+        # Get the origin chunk
+        chunk = loaded_chunks[(spawn_chunk_x, spawn_chunk_y)]
     
-    chunk = loaded_chunks[(spawn_chunk_x, spawn_chunk_y)]
-    for y in range(config.CHUNK_SIZE):
-        for x in range(config.CHUNK_SIZE):
-            if chunk[y, x] == config.EMPTY:
-                return x * config.PIXEL_SIZE, y * config.PIXEL_SIZE
-    
-    return 0, 0  # Default to (0, 0) if no empty space is found
+    try:
+        # Find an empty space for spawning
+        for y in range(config.CHUNK_SIZE):
+            for x in range(config.CHUNK_SIZE):
+                if chunk[y, x] == config.EMPTY and y < config.CHUNK_SIZE - 1 and chunk[y+1, x] != config.EMPTY:
+                    # Found empty space with ground beneath it
+                    return x * config.PIXEL_SIZE, y * config.PIXEL_SIZE
+            
+        # If no ideal spot is found, just use any empty space
+        for y in range(config.CHUNK_SIZE):
+            for x in range(config.CHUNK_SIZE):
+                if chunk[y, x] == config.EMPTY:
+                    return x * config.PIXEL_SIZE, y * config.PIXEL_SIZE
+        
+        # If no empty space at all, create one at the top
+        print("No empty space found in origin chunk, creating one at top center")
+        middle_x = config.CHUNK_SIZE // 2
+        chunk[0, middle_x] = config.EMPTY
+        return middle_x * config.PIXEL_SIZE, 0
+        
+    except Exception as e:
+        # Last resort emergency spawn
+        print(f"EMERGENCY: Error in finding spawn position: {e}")
+        print("Using emergency spawn at (0,0)")
+        return 0, 0
 
 def check_collision(px, py, move_x, move_y):
     """Check for collisions between player and blocks."""
@@ -217,13 +260,16 @@ chunk_workers = start_chunk_workers(CHUNK_GEN_THREAD_COUNT, SEED)
 # Initialize game state
 if os.path.exists(SAVE_FILE):
     load_world_from_file(SAVE_FILE, storage_system)
+
+# Explicitly ensure that the origin chunk is loaded
+if (0, 0) not in loaded_chunks:
+    print("CRITICAL: Origin chunk not loaded, generating...")
+    generate_chunk(0, 0, 1)
+    print("CRITICAL: Origin chunk generated.")
     
 # Get initial player position
 player_x, player_y = find_spawn_position()
 player = Player(player_x, player_y)
-
-# Initialize inventory
-inventory = Inventory()
 
 # Initialize camera position
 camera_x = player_x - screen_width // 2
@@ -233,12 +279,50 @@ camera_y = player_y - screen_height // 2
 mining_progress = {}  # Dictionary to track mining progress for each block
 mining_animation = {}  # Dictionary to store mining animation progress
 
+# Generate chunks in a more controlled way
+print("Starting initial chunk generation...")
+player_chunk_x, player_chunk_y = get_chunk_coords(int(player.x // config.PIXEL_SIZE), 
+                                                int(player.y // config.PIXEL_SIZE))
+
+# Generate nearby chunks immediately (synchronously)
+for dy in range(-2, 3):
+    for dx in range(-2, 3):
+        cx = player_chunk_x + dx
+        cy = player_chunk_y + dy
+        if (cx, cy) not in loaded_chunks:
+            print(f"Generating initial chunk at ({cx}, {cy})...")
+            generate_chunk(cx, cy, SEED)
+
+# Queue additional chunks for background loading
+for dy in range(-4, 5):
+    for dx in range(-4, 5):
+        cx = player_chunk_x + dx
+        cy = player_chunk_y + dy
+        # Skip chunks we already generated
+        if abs(dx) <= 2 and abs(dy) <= 2:
+            continue
+        if (cx, cy) not in loaded_chunks:
+            chunk_generation_queue.put((cx, cy, SEED))
+
+print(f"Initial chunks generated. Queued additional {chunk_generation_queue.qsize()} chunks.")
+
 # Generate initial chunks around the player
 player_chunk_x, player_chunk_y = get_chunk_coords(int(player.x // config.PIXEL_SIZE), 
                                                  int(player.y // config.PIXEL_SIZE))
 for dx in range(-3, 4):
     for dy in range(-3, 4):
         generate_chunk(player_chunk_x + dx, player_chunk_y + dy, SEED)
+
+# Initialize time of day (Terraria-style day/night cycle)
+time_of_day = 0.3  # Start at morning
+DAY_LENGTH = 600.0  # 10 real minutes = 1 full day/night cycle
+
+# Generate background layers
+background_width = screen_width * 3
+background_height = screen_height
+cloud_layer = generate_clouds(background_width, background_height, SEED)
+hill_layers = generate_hills(background_width, background_height, 2, SEED)
+star_layer = generate_stars(background_width, background_height, SEED)
 
 # Main Game Loop
 if __name__ == '__main__':
@@ -632,8 +716,12 @@ if __name__ == '__main__':
         
         # Manage chunks for infinite world
         if ENABLE_INFINITE_WORLD:
+            # Ensure chunks are loaded in waves, not all at once
             ensure_chunks_around_point(player.x, player.y, CHUNK_LOAD_RADIUS)
-            if int(current_time) != int(last_time):
+            
+            # Unload distant chunks less frequently to prevent loading/unloading cycles
+            if int(current_time) % 5 == 0 and int(current_time) != int(last_time):  # Every 5 seconds
+                print(f"Checking chunks to unload. {len(loaded_chunks)} chunks currently loaded.")
                 unload_distant_chunks(player.x, player.y, CHUNK_UNLOAD_DISTANCE)
         
         # Update machines
@@ -645,8 +733,15 @@ if __name__ == '__main__':
         # Mettre à jour le système d'extraction pour déplacer les items
         extractor_system.update(dt)
         
+        # Update time of day
+        time_of_day += dt / DAY_LENGTH
+        if time_of_day >= 1.0:
+            time_of_day -= 1.0
+        
         # --- RENDERING ---
-        screen.fill((0, 0, 0))
+        # Draw the background with parallax effect
+        draw_background(screen, camera_x, camera_y, time_of_day, background_width, background_height, 
+                        cloud_layer, hill_layers, star_layer)
         
         active_chunks = get_active_chunks(player.x, player.y, screen_width, screen_height, 
                                          VIEW_DISTANCE_MULTIPLIER, MAX_ACTIVE_CHUNKS)
@@ -819,7 +914,7 @@ if __name__ == '__main__':
         inventory.draw_dragged_item(screen)
         
         if PERFORMANCE_MONITOR:
-            draw_performance_stats(screen, dt, len(active_chunks), len(chunk_cache), fps_font)
+            draw_performance_stats(screen, dt, len(active_chunks), len(loaded_chunks), fps_font)
         
         pygame.display.flip()
         clock.tick(config.FPS_CAP)
@@ -834,4 +929,5 @@ if __name__ == '__main__':
     
     pygame.quit()
     sys.exit()
+
 

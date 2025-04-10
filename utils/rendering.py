@@ -2,14 +2,24 @@ import pygame
 from core import config
 from world import chunks  # Import chunks to access the cache and modified chunks
 from systems import conveyor_system, machine_system
+
 def create_block_surfaces():
     """Create surfaces for each block type."""
     block_surfaces = {}
-    for block_id, block in config.BLOCKS.items():
-        if block_id != config.EMPTY:
-            surface = pygame.Surface((config.PIXEL_SIZE, config.PIXEL_SIZE))
-            surface.fill(block["color"])
-            block_surfaces[block_id] = surface
+    for block_id, block_data in config.BLOCKS.items():
+        # Create a surface for this block type
+        surface = pygame.Surface((config.PIXEL_SIZE, config.PIXEL_SIZE), pygame.SRCALPHA)
+        
+        # If it's an empty block, make it completely transparent
+        if block_id == config.EMPTY:
+            # Make the surface fully transparent
+            surface.fill((0, 0, 0, 0))
+        else:
+            # Otherwise use the block's color
+            color = block_data.get("color", (255, 0, 255))  # Default to magenta for missing colors
+            surface.fill(color)
+        
+        block_surfaces[block_id] = surface
     return block_surfaces
 
 def render_chunk(chunk, chunk_x, chunk_y, camera_x, camera_y, 
@@ -21,8 +31,8 @@ def render_chunk(chunk, chunk_x, chunk_y, camera_x, camera_y,
         return chunks.chunk_cache[cache_key]
     
     # Create a new surface for rendering
-    surface = pygame.Surface((config.CHUNK_SIZE * config.PIXEL_SIZE, config.CHUNK_SIZE * config.PIXEL_SIZE))
-    surface.fill((0, 0, 0))  # Black background
+    surface = pygame.Surface((config.CHUNK_SIZE * config.PIXEL_SIZE, config.CHUNK_SIZE * config.PIXEL_SIZE), pygame.SRCALPHA)
+    surface.fill((0, 0, 0, 0))  # Fully transparent background
     
     # Optimization: Draw blocks in batches by type
     blocks_by_type = {}
