@@ -2,6 +2,7 @@ import pygame
 from core import config
 from world import chunks  # Import chunks to access the cache and modified chunks
 from systems import conveyor_system, machine_system
+import random
 
 def create_block_surfaces():
     """Create surfaces for each block type."""
@@ -15,9 +16,61 @@ def create_block_surfaces():
             # Make the surface fully transparent
             surface.fill((0, 0, 0, 0))
         else:
-            # Otherwise use the block's color
+            # Get the block's color
             color = block_data.get("color", (255, 0, 255))  # Default to magenta for missing colors
-            surface.fill(color)
+            
+            # Add special rendering for certain block types
+            if block_id == config.WOOD:
+                # Wooden texture with grain
+                main_color = color
+                dark_color = (max(0, color[0]-30), max(0, color[1]-30), max(0, color[2]-30))
+                
+                # Fill with main color
+                surface.fill(main_color)
+                
+                # Add wood grain lines
+                for i in range(0, config.PIXEL_SIZE, 2):
+                    pygame.draw.line(surface, dark_color, (i, 0), (i, config.PIXEL_SIZE))
+                    
+            elif block_id == config.WATER:
+                # Semi-transparent blue for water
+                water_color = (50, 150, 255, 180)  # With alpha
+                surface.fill(water_color)
+                
+                # Add wave effect
+                lighter_color = (100, 200, 255, 150)
+                for i in range(0, config.PIXEL_SIZE, 3):
+                    pygame.draw.line(surface, lighter_color, (0, i), (config.PIXEL_SIZE, i), 1)
+                    
+            elif block_id == config.GRASS:
+                # Green top with brown sides
+                dirt_color = (120, 80, 40)  # Brown for dirt
+                grass_color = color  # Green for grass
+                
+                # Fill with dirt color first
+                surface.fill(dirt_color)
+                
+                # Add grass on top third
+                grass_rect = pygame.Rect(0, 0, config.PIXEL_SIZE, config.PIXEL_SIZE // 3)
+                pygame.draw.rect(surface, grass_color, grass_rect)
+                
+            elif block_id in [config.IRON_ORE, config.DIAMOND_ORE]:
+                # Stone with ore veins
+                stone_color = (100, 100, 100)  # Base stone color
+                ore_color = color  # Ore color from config
+                
+                # Fill with stone color
+                surface.fill(stone_color)
+                
+                # Add ore speckles
+                for _ in range(5):
+                    x = random.randint(1, config.PIXEL_SIZE-2)
+                    y = random.randint(1, config.PIXEL_SIZE-2)
+                    size = random.randint(1, 2)
+                    pygame.draw.circle(surface, ore_color, (x, y), size)
+            else:
+                # Default rendering for other blocks
+                surface.fill(color)
         
         block_surfaces[block_id] = surface
     return block_surfaces
