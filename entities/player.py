@@ -13,8 +13,7 @@ class Player:
         self.speed = config.PLAYER_SPEED
         self.jetpack_speed = 200
         self.color = (255, 255, 255)  # White player
-        
-        # Collision settings
+        self.on_ground = False
         self.collision_enabled = True
     
     def update(self, dt, keys, check_collision_func):
@@ -30,6 +29,15 @@ class Player:
         if keys[pygame.K_UP] or keys[pygame.K_w]: move_y -= self.jetpack_speed
         if keys[pygame.K_DOWN] or keys[pygame.K_s]: move_y += self.jetpack_speed
         
+        # Apply gravity
+        if not self.on_ground:
+            self.velocity_y += config.GRAVITY * dt
+
+        # Jumping
+        if keys[pygame.K_SPACE] and self.on_ground:
+            self.velocity_y = config.JUMP_SPEED
+            self.on_ground = False
+        
         # Apply movement with collision detection
         if self.collision_enabled:
             # Check horizontal collision
@@ -39,6 +47,13 @@ class Player:
             # Check vertical collision
             if not check_collision_func(self.x, self.y, 0, move_y * dt):
                 self.y += move_y * dt  # Vertical movement
+                self.on_ground = False
+            else:
+                if move_y > 0:  # Falling
+                    self.on_ground = True
+                    self.velocity_y = 0
+                elif move_y < 0:  # Hitting the ceiling
+                    self.velocity_y = 0
         else:
             # No collision check
             self.x += move_x * dt

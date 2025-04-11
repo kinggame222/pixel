@@ -248,7 +248,7 @@ def generate_chunk(chunk_array, chunk_x, chunk_y, seed):
                 random_pool = np.random.random() < 0.1 and is_flat  # 10% chance for pools on flat ground
                 
                 if is_depression or random_pool:
-                    water_depth = np.random.randint(1, 4)  # Random water depth between 1-3 blocks
+                    water_depth = np.random.randint(2, 5)  # Random water depth between 2-4 blocks
                     
                     for wy in range(1, water_depth + 1):
                         water_y = local_surface_y + wy

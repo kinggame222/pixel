@@ -4,7 +4,7 @@ import time
 
 # --- Game Configuration ---
 
-PIXEL_SIZE = 4
+PIXEL_SIZE = 2  # Augmenter la taille des pixels pour un effet de zoom
 SEED = int(time.time())  # Seed for world generation (non-deterministic)
 PLAYER_WIDTH = 4 * PIXEL_SIZE
 PLAYER_HEIGHT = 5 * PIXEL_SIZE

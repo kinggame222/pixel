@@ -7,7 +7,9 @@
     "gravity": false,
     "hardness": 0,
     "density": 0,
-    "breakable": false
+    "breakable": false,
+    "shader": null,
+    "texture": null
   },
   {
     "id": 1,
@@ -22,7 +24,9 @@
       "1": 0.6,
       "6": 0.1,
       "3": 0.2
-    }
+    },
+    "shader": null,
+    "texture": "textures/gravel.png"
   },
   {
     "id": 2,
@@ -37,7 +41,9 @@
       "1": 0.2,
       "6": 0.05,
       "2": 0.75
-    }
+    },
+    "shader": null,
+    "texture": "textures/stone.png"
   },
   {
     "id": 3,
@@ -52,7 +58,9 @@
       "3": 0.7,
       "1": 0.2,
       "0": 0.1
-    }
+    },
+    "shader": null,
+    "texture": "textures/dirt.png"
   },
   {
     "id": 4,
@@ -67,7 +75,9 @@
       "4": 0.8,
       "1": 0.1,
       "3": 0.1
-    }
+    },
+    "shader": null,
+    "texture": "textures/sand.png"
   },
   {
     "id": 5,
@@ -81,7 +91,9 @@
     "drops": {
       "5": 0.7,
       "0": 0.3
-    }
+    },
+    "shader": null,
+    "texture": "textures/wood.png"
   },
   {
     "id": 6,
@@ -135,7 +147,9 @@
     "drops": {
       "3": 0.8,
       "9": 0.2
-    }
+    },
+    "shader": null,
+    "texture": "textures/grass.png"
   },
   {
     "id": 10,
@@ -167,9 +181,12 @@
     "density": 3000,
     "breakable": true,
     "is_machine": true,
+    "size": [4, 6],  
     "drops": {
       "12": 1.0
-    }
+    },
+    "shader": null,
+    "texture": "textures/ore_processor.png"
   },
   {
     "id": 13,
@@ -305,6 +322,12 @@
     "gravity": false,
     "hardness": 0.2,
     "density": 0,
-    "breakable": true
+    "breakable": true,
+    "drops": {
+      "5": 0.1,
+      "0": 0.9
+    },
+    "shader": null,
+    "texture": "textures/leaves.png"
   }
 ]
