@@ -50,12 +50,12 @@ DEBUG_MODE = True          # Enable debug mode
 SAVE_FILE = "world.json"   # Path to the save file
 SEED = config.SEED         # World generation seed
 ENABLE_CHUNK_CACHE = True  # Enable chunk caching for performance
-MAX_ACTIVE_CHUNKS = 400     # Reduce maximum active chunks to render
+MAX_ACTIVE_CHUNKS = 200     # Reduce maximum active chunks to render
 PERFORMANCE_MONITOR = True # Show performance stats
-VIEW_DISTANCE_MULTIPLIER = 5  # Reduce view distance multiplier
-CHUNK_LOAD_RADIUS = 10      # Smaller initial radius for faster generation
-CHUNK_UNLOAD_DISTANCE = 5  # Keep fewer chunks loaded
-CHUNK_GEN_THREAD_COUNT = 12 # Number of threads for chunk generation
+VIEW_DISTANCE_MULTIPLIER = 1.5  # Reduce view distance multiplier
+CHUNK_LOAD_RADIUS = 5      # Smaller initial radius for faster generation
+CHUNK_UNLOAD_DISTANCE = 10  # Keep fewer chunks loaded
+CHUNK_GEN_THREAD_COUNT = 4 # Augmentez à 4 threads pour une génération plus rapide
 ENABLE_INFINITE_WORLD = True  # Enable infinite world generation
 USE_GPU_GENERATION = True  # Use GPU for generation if available
 
@@ -318,23 +318,13 @@ mining_animation = {}  # Dictionary to store mining animation progress
 
 # Generate chunks in a more controlled way
 print("Starting initial chunk generation...")
-player_chunk_x, player_chunk_y = get_chunk_coords(int(player.x // config.PIXEL_SIZE), 
-                                                int(player.y // config.PIXEL_SIZE))
-
-# Generate nearby chunks immediately (synchronously)
-for dy in range(-2, 3):
-    for dx in range(-2, 3):
-        cx = player_chunk_x + dx
-        cy = player_chunk_y + dy
-        if (cx, cy) not in loaded_chunks:
-            print(f"Generating initial chunk at ({cx}, {cy})...")
-            generate_chunk(cx, cy, SEED)
+player_chunk_x, player_chunk_y = get_chunk_coords(int(player.x), int(player.y))
 
 # Queue additional chunks for background loading
 for dy in range(-4, 5):
     for dx in range(-4, 5):
-        cx = player_chunk_x + dx
-        cy = player_chunk_y + dy
+        cx = int(player_chunk_x + dx)
+        cy = int(player_chunk_y + dy)
         # Skip chunks we already generated
         if abs(dx) <= 2 and abs(dy) <= 2:
             continue
@@ -344,8 +334,7 @@ for dy in range(-4, 5):
 print(f"Initial chunks generated. Queued additional {chunk_generation_queue.qsize()} chunks.")
 
 # Generate initial chunks around the player
-player_chunk_x, player_chunk_y = get_chunk_coords(int(player.x // config.PIXEL_SIZE), 
-                                                 int(player.y // config.PIXEL_SIZE))
+player_chunk_x, player_chunk_y = get_chunk_coords(int(player.x), int(player.y))
 for dx in range(-3, 4):
     for dy in range(-3, 4):
         generate_chunk(player_chunk_x + dx, player_chunk_y + dy, SEED)
@@ -372,8 +361,117 @@ if USE_GPU_GENERATION:
 # Initialize main menu
 main_menu = MainMenu(screen_width, screen_height)
 
+def generate_chunk_with_validation(chunk_x, chunk_y, seed):
+    """Generate a chunk and validate its contents."""
+    chunk = generate_chunk(chunk_x, chunk_y, seed)
+    
+    # Vérifiez que tous les blocs générés sont valides
+    for y in range(config.CHUNK_SIZE):
+        for x in range(config.CHUNK_SIZE):
+            block_type = chunk[y, x]
+            if block_type not in config.BLOCKS:
+                print(f"Invalid block type {block_type} at ({x}, {y}) in chunk ({chunk_x}, {chunk_y}). Replacing with EMPTY.")
+                chunk[y, x] = config.EMPTY  # Remplacez les blocs non valides par EMPTY
+    
+    # Retournez le chunk validé
+    return chunk
 
+# Remplacez les appels à `generate_chunk` par `generate_chunk_with_validation`
+for dy in range(-3, 4):
+    for dx in range(-3, 4):
+        cx = int(player_chunk_x + dx)
+        cy = int(player_chunk_y + dy)
+        if (cx, cy) not in loaded_chunks:
+            print(f"Generating and validating chunk at ({cx, cy})...")
+            loaded_chunks[(cx, cy)] = generate_chunk_with_validation(cx, cy, SEED)
+            modified_chunks.add((cx, cy))
 
+def render_visible_chunks(screen, camera_x, camera_y, active_chunks, loaded_chunks, block_surfaces, machine_system):
+    """Render only the visible chunks to improve performance."""
+    rendered_chunks = {}
+    for chunk_x, chunk_y in active_chunks:
+        if (chunk_x, chunk_y) in loaded_chunks:
+            chunk = loaded_chunks[(chunk_x, chunk_y)]
+            rendered_chunks[(chunk_x, chunk_y)] = render_chunk(
+                chunk, chunk_x, chunk_y, camera_x, camera_y, 
+                mining_animation, block_surfaces, machine_system
+            )
+    
+    for (chunk_x, chunk_y), surface in rendered_chunks.items():
+        chunk_screen_x = chunk_x * config.CHUNK_SIZE * config.PIXEL_SIZE - camera_x
+        chunk_screen_y = chunk_y * config.CHUNK_SIZE * config.PIXEL_SIZE - camera_y
+        screen.blit(surface, (chunk_screen_x, chunk_screen_y))
+
+def render_debug_chunks(screen, camera_x, camera_y, active_chunks):
+    """Render chunk borders for debugging purposes."""
+    for chunk_x, chunk_y in active_chunks:
+        chunk_screen_x = chunk_x * config.CHUNK_SIZE * config.PIXEL_SIZE - camera_x
+        chunk_screen_y = chunk_y * config.CHUNK_SIZE * config.PIXEL_SIZE - camera_y
+        chunk_rect = pygame.Rect(chunk_screen_x, chunk_screen_y, 
+                                 config.CHUNK_SIZE * config.PIXEL_SIZE, 
+                                 config.CHUNK_SIZE * config.PIXEL_SIZE)
+        pygame.draw.rect(screen, (0, 255, 0), chunk_rect, 1)  # Green border for chunks
+
+# Corrigez les appels à `get_chunk_coords` pour garantir que les coordonnées sont des entiers
+player_chunk_x, player_chunk_y = get_chunk_coords(int(player.x), int(player.y))
+
+# Assurez-vous que les coordonnées des chunks sont des entiers dans toutes les boucles
+for dy in range(-3, 4):
+    for dx in range(-3, 4):
+        cx = int(player_chunk_x + dx)
+        cy = int(player_chunk_y + dy)
+        if (cx, cy) not in loaded_chunks:
+            print(f"Generating and validating chunk at ({cx, cy})...")
+            loaded_chunks[(cx, cy)] = generate_chunk_with_validation(cx, cy, SEED)
+            modified_chunks.add((cx, cy))
+
+# Vérifiez également les coordonnées dans `ensure_chunks_around_point`
+def ensure_chunks_around_point(x, y, radius):
+    """Ensure chunks are loaded around a point."""
+    chunk_x, chunk_y = get_chunk_coords(x, y)
+    for dy in range(-radius, radius + 1):
+        for dx in range(-radius, radius + 1):
+            cx, cy = int(chunk_x + dx), int(chunk_y + dy)
+            if (cx, cy) not in loaded_chunks:
+                chunk_generation_queue.put((cx, cy, SEED))
+
+def ensure_chunks_around_point_optimized(x, y, radius):
+    """Ensure chunks are loaded around a point with optimized checks."""
+    chunk_x, chunk_y = get_chunk_coords(x, y)
+    chunks_to_generate = []
+    
+    for dy in range(-radius, radius + 1):
+        for dx in range(-radius, radius + 1):
+            cx, cy = chunk_x + dx, chunk_y + dy
+            if (cx, cy) not in loaded_chunks:
+                chunks_to_generate.append((cx, cy))
+    
+    # Trier les chunks par distance pour prioriser ceux proches du joueur
+    chunks_to_generate.sort(key=lambda coords: abs(coords[0] - chunk_x) + abs(coords[1] - chunk_y))
+    
+    # Ajouter les chunks à la file d'attente
+    for cx, cy in chunks_to_generate:
+        chunk_generation_queue.put((cx, cy, SEED))
+
+def ensure_chunks_around_player(player_x, player_y, radius):
+    """Ensure chunks are loaded around the player's position."""
+    chunk_x, chunk_y = get_chunk_coords(player_x, player_y)
+    chunks_to_generate = []
+
+    for dy in range(-radius, radius + 1):
+        for dx in range(-radius, radius + 1):
+            cx, cy = chunk_x + dx, chunk_y + dy
+            if (cx, cy) not in loaded_chunks:
+                chunks_to_generate.append((cx, cy))
+
+    # Trier les chunks par distance au joueur pour prioriser ceux proches
+    chunks_to_generate.sort(key=lambda coords: abs(coords[0] - chunk_x) + abs(coords[1] - chunk_y))
+
+    # Ajouter les chunks à la file d'attente
+    for cx, cy in chunks_to_generate:
+        chunk_generation_queue.put((cx, cy, SEED))
+
+# Remplacez les appels à `ensure_chunks_around_point` par `ensure_chunks_around_player`
 # Main Game Loop
 if __name__ == '__main__':
     running = True
@@ -452,11 +550,14 @@ if __name__ == '__main__':
                         elif event.key == pygame.K_9:
                             inventory.select_slot(8)
                         elif event.key == pygame.K_EQUALS or event.key == pygame.K_PLUS:
-                            VIEW_DISTANCE_MULTIPLIER = min(3.0, VIEW_DISTANCE_MULTIPLIER + 0.5)
+                            VIEW_DISTANCE_MULTIPLIER = min(100.0, VIEW_DISTANCE_MULTIPLIER + 2)
                             print(f"View distance: {VIEW_DISTANCE_MULTIPLIER:.1f}x")
+                            print(f"Max active chunks: {MAX_ACTIVE_CHUNKS}")
                         elif event.key == pygame.K_MINUS:
-                            VIEW_DISTANCE_MULTIPLIER = max(1.0, VIEW_DISTANCE_MULTIPLIER - 0.5)
+                            VIEW_DISTANCE_MULTIPLIER = max(1.0, VIEW_DISTANCE_MULTIPLIER - 2)
+                         
                             print(f"View distance: {VIEW_DISTANCE_MULTIPLIER:.1f}x")
+                            print(f"Max active chunks: {MAX_ACTIVE_CHUNKS}")
                         elif event.key == pygame.K_i:  # Toggle debug mode
                             DEBUG_MODE = not DEBUG_MODE
                         elif event.key == pygame.K_p:  # Add ore processor to inventory
@@ -799,7 +900,7 @@ if __name__ == '__main__':
                 # Manage chunks for infinite world
                 if ENABLE_INFINITE_WORLD:
                     # Ensure chunks are loaded in waves, not all at once
-                    ensure_chunks_around_point(player.x, player.y, CHUNK_LOAD_RADIUS)
+                    ensure_chunks_around_player(player.x, player.y, CHUNK_LOAD_RADIUS)
                     
                     # Unload distant chunks less frequently to prevent loading/unloading cycles
                     if int(current_time) % 5 == 0 and int(current_time) != int(last_time):  # Every 5 seconds
@@ -827,40 +928,15 @@ if __name__ == '__main__':
                 draw_background(screen, camera_x, camera_y, time_of_day, background_width, background_height, 
                                 cloud_layer, hill_layers, star_layer)
                 
+                # Optimized chunk rendering
                 active_chunks = get_active_chunks(player.x, player.y, screen_width, screen_height, 
-                                                VIEW_DISTANCE_MULTIPLIER, MAX_ACTIVE_CHUNKS)
-            
-                rendered_chunks = {}
-                for chunk_x, chunk_y in active_chunks:
-                    if (chunk_x, chunk_y) in loaded_chunks:
-                        chunk = loaded_chunks[(chunk_x, chunk_y)]
-                        rendered_chunks[(chunk_x, chunk_y)] = render_chunk(
-                            chunk, chunk_x, chunk_y, camera_x, camera_y, 
-                            mining_animation, block_surfaces, machine_system
-                        )
+                                                  VIEW_DISTANCE_MULTIPLIER, MAX_ACTIVE_CHUNKS)
+                render_visible_chunks(screen, camera_x, camera_y, active_chunks, loaded_chunks, block_surfaces, machine_system)
                 
-                for (chunk_x, chunk_y), surface in rendered_chunks.items():
-                    chunk_screen_x = chunk_x * config.CHUNK_SIZE * config.PIXEL_SIZE - camera_x
-                    chunk_screen_y = chunk_y * config.CHUNK_SIZE * config.PIXEL_SIZE - camera_y
-                    
-                    # Render each block with shaders
-                    for y in range(config.CHUNK_SIZE):
-                        for x in range(config.CHUNK_SIZE):
-                            block_type = get_block_at(chunk_x * config.CHUNK_SIZE + x, chunk_y * config.CHUNK_SIZE + y)
-                            if block_type != config.EMPTY:
-                                render_block(surface, block_type, x * config.PIXEL_SIZE, y * config.PIXEL_SIZE, block_surfaces)
-                    
-                    screen.blit(surface, (chunk_screen_x, chunk_screen_y))
-                
+                # Render chunk borders in debug mode
                 if DEBUG_MODE:
-                    for chunk_x, chunk_y in active_chunks:
-                        chunk_screen_x = chunk_x * config.CHUNK_SIZE * config.PIXEL_SIZE - camera_x
-                        chunk_screen_y = chunk_y * config.CHUNK_SIZE * config.PIXEL_SIZE - camera_y
-                        chunk_rect = pygame.Rect(chunk_screen_x, chunk_screen_y, 
-                                                config.CHUNK_SIZE * config.PIXEL_SIZE, 
-                                                config.CHUNK_SIZE * config.PIXEL_SIZE)
-                        pygame.draw.rect(screen, (0, 255, 0), chunk_rect, 1)
-                
+                    render_debug_chunks(screen, camera_x, camera_y, active_chunks)
+
                 player.draw(screen, camera_x, camera_y)
                 
                 if laser_active and len(laser_points) >= 2:

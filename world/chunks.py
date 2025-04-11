@@ -34,8 +34,8 @@ chunk_lock = threading.RLock()  # Lock for thread-safe dictionary access
 
 def get_chunk_coords(block_x, block_y):
     """Get the chunk coordinates that contain the given block position."""
-    chunk_x = block_x // config.CHUNK_SIZE
-    chunk_y = block_y // config.CHUNK_SIZE
+    chunk_x = int(block_x // config.CHUNK_SIZE)
+    chunk_y = int(block_y // config.CHUNK_SIZE)
     return chunk_x, chunk_y
 
 def get_block_at(block_x, block_y):
@@ -92,7 +92,7 @@ def generate_chunk_worker():
     while chunk_worker_running:
         try:
             # Get a task from the queue with a timeout
-            task = chunk_generation_queue.get(timeout=0.5)
+            task = chunk_generation_queue.get(timeout=0.1)
             chunk_x, chunk_y, seed = task
             
             # Skip if the chunk is already loaded
@@ -145,8 +145,60 @@ def stop_chunk_workers(workers):
         if worker.is_alive():
             worker.join(0.1)
 
+def align_chunk_borders(chunk, chunk_x, chunk_y):
+    """Ensure the borders of the chunk align with adjacent chunks."""
+    # Vérifiez les chunks adjacents
+    for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+        neighbor_coords = (chunk_x + dx, chunk_y + dy)
+        if neighbor_coords in loaded_chunks:
+            neighbor_chunk = loaded_chunks[neighbor_coords]
+            
+            # Alignez les bordures gauche/droite
+            if dx == -1:  # Chunk gauche
+                chunk[:, 0] = neighbor_chunk[:, -1]
+            elif dx == 1:  # Chunk droit
+                chunk[:, -1] = neighbor_chunk[:, 0]
+            
+            # Alignez les bordures haut/bas
+            if dy == -1:  # Chunk au-dessus
+                chunk[0, :] = neighbor_chunk[-1, :]
+            elif dy == 1:  # Chunk en dessous
+                chunk[-1, :] = neighbor_chunk[0, :]
+    return chunk
+
+def validate_and_align_chunk(chunk, chunk_x, chunk_y):
+    """Validate the chunk and align its borders with adjacent chunks."""
+    # Vérifiez que tous les blocs générés sont valides
+    for y in range(config.CHUNK_SIZE):
+        for x in range(config.CHUNK_SIZE):
+            block_type = chunk[y, x]
+            if block_type not in config.BLOCKS:
+                print(f"Invalid block type {block_type} at ({x}, {y}) in chunk ({chunk_x}, {chunk_y}). Replacing with EMPTY.")
+                chunk[y, x] = config.EMPTY  # Remplacez les blocs non valides par EMPTY
+
+    # Alignez les bordures avec les chunks adjacents
+    for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+        neighbor_coords = (chunk_x + dx, chunk_y + dy)
+        if neighbor_coords in loaded_chunks:
+            neighbor_chunk = loaded_chunks[neighbor_coords]
+            
+            # Alignez les bordures gauche/droite
+            if dx == -1:  # Chunk gauche
+                chunk[:, 0] = neighbor_chunk[:, -1]
+            elif dx == 1:  # Chunk droit
+                chunk[:, -1] = neighbor_chunk[:, 0]
+            
+            # Alignez les bordures haut/bas
+            if dy == -1:  # Chunk au-dessus
+                chunk[0, :] = neighbor_chunk[-1, :]
+            elif dy == 1:  # Chunk en dessous
+                chunk[-1, :] = neighbor_chunk[0, :]
+    return chunk
+
 def generate_chunk(chunk_x, chunk_y, seed):
     """Generate a new chunk at the given position."""
+    chunk_x = int(chunk_x)  # Ensure chunk_x is an integer
+    chunk_y = int(chunk_y)  # Ensure chunk_y is an integer
     print(f"Generating chunk at ({chunk_x}, {chunk_y})")
     
     # Create an empty chunk as a numpy array
@@ -167,58 +219,26 @@ def generate_chunk(chunk_x, chunk_y, seed):
         print(f"Error generating chunk terrain at ({chunk_x}, {chunk_y}): {e}")
         # Even if there's an error, we'll still create an empty chunk
     
+    # Validez et alignez le chunk
+    chunk = validate_and_align_chunk(chunk, chunk_x, chunk_y)
+
     # Add the chunk to the loaded chunks with lock to prevent race conditions
     with chunk_lock:
         loaded_chunks[(chunk_x, chunk_y)] = chunk
         modified_chunks.add((chunk_x, chunk_y))
-        
-        # Verify the chunk was actually added
-        if (chunk_x, chunk_y) in loaded_chunks:
-            print(f"Chunk ({chunk_x}, {chunk_y}) successfully added to loaded_chunks")
-            # Make a backup of origin chunk if it's the origin
-            if chunk_x == 0 and chunk_y == 0:
-                print("Created backup of origin chunk")
-                global origin_chunk_backup
-                origin_chunk_backup = chunk.copy()
-        else:
-            print(f"ERROR: Chunk ({chunk_x}, {chunk_y}) FAILED to be added to loaded_chunks")
-    
+        print(f"Chunk ({chunk_x}, {chunk_y}) successfully added to loaded_chunks")
+
     return chunk
 
-def ensure_chunks_around_point(world_x, world_y, radius):
-    """Ensure chunks are loaded around a given point."""
-    block_x = int(world_x // config.PIXEL_SIZE)
-    block_y = int(world_y // config.PIXEL_SIZE)
-    center_chunk_x, center_chunk_y = get_chunk_coords(block_x, block_y)
-    
-    # Use a spiral pattern to prioritize loading chunks closest to the player first
-    max_queued = 30  # Don't queue too many chunks at once
-    queued = 0
-    
-    # Generate chunks in a spiral pattern
-    for r in range(1, radius + 1):
-        if queued >= max_queued:
-            break
-            
-        # Top and bottom edges
-        for dx in range(-r, r + 1):
-            for dy in [-r, r]:
-                chunk_x, chunk_y = center_chunk_x + dx, center_chunk_y + dy
-                if (chunk_x, chunk_y) not in loaded_chunks and not any(item[0] == chunk_x and item[1] == chunk_y for item in list(chunk_generation_queue.queue)):
-                    chunk_generation_queue.put((chunk_x, chunk_y, 1))
-                    queued += 1
-                    if queued >= max_queued:
-                        return
-        
-        # Left and right edges (excluding corners)
-        for dy in range(-r + 1, r):
-            for dx in [-r, r]:
-                chunk_x, chunk_y = center_chunk_x + dx, center_chunk_y + dy
-                if (chunk_x, chunk_y) not in loaded_chunks and not any(item[0] == chunk_x and item[1] == chunk_y for item in list(chunk_generation_queue.queue)):
-                    chunk_generation_queue.put((chunk_x, chunk_y, 1))
-                    queued += 1
-                    if queued >= max_queued:
-                        return
+def ensure_chunks_around_point(x, y, radius):
+    """Ensure chunks are loaded around a point with optimized checks."""
+    chunk_x, chunk_y = get_chunk_coords(x, y)
+    for dy in range(-radius, radius + 1):
+        for dx in range(-radius, radius + 1):
+            cx = int(chunk_x + dx)
+            cy = int(chunk_y + dy)
+            if (cx, cy) not in loaded_chunks:
+                chunk_generation_queue.put((cx, cy, config.SEED))
 
 def unload_distant_chunks(world_x, world_y, unload_distance):
     """Unload chunks that are too far from a given position."""
@@ -254,7 +274,7 @@ def unload_distant_chunks(world_x, world_y, unload_distance):
         if chunk_pos in modified_chunks:
             modified_chunks.remove(chunk_pos)
 
-def get_active_chunks(player_x, player_y, screen_width, screen_height, view_multiplier=1.0, max_chunks=200):
+def get_active_chunks(player_x, player_y, screen_width, screen_height, view_multiplier, max_chunks):
     """Get active chunks that should be rendered based on the player's position."""
     block_x = int(player_x // config.PIXEL_SIZE)
     block_y = int(player_y // config.PIXEL_SIZE)
@@ -404,7 +424,7 @@ def ensure_origin_chunk_exists():
 __all__ = [
     'get_chunk_coords', 'get_block_at', 'set_block_at', 'mark_chunk_modified',
     'generate_chunk', 'start_chunk_workers', 'stop_chunk_workers',
-    'ensure_chunks_around_point', 'unload_distant_chunks', 'get_active_chunks',
+    'ensure_chunks_around_point_optimized', 'unload_distant_chunks', 'get_active_chunks',
     'save_world_to_file', 'load_world_from_file', 'chunk_lock',
     'ensure_origin_chunk_exists', 'chunk_generation_queue', 'loaded_chunks'  # Add these exports
 ]

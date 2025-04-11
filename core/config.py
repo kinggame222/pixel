@@ -17,7 +17,7 @@ CHUNK_SIZE = 16  # Size of each chunk (in blocks)
 
 # --- Graphics Settings ---
 WINDOW_TITLE = "Pixel Mining - Modular"
-FPS_CAP = 60
+FPS_CAP = 165
 
 # --- Physics ---
 GRAVITY = 500
