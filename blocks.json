@@ -266,5 +266,45 @@
     "drops": {
       "19": 1.0
     }
+  },
+  {
+    "id": 20,
+    "name": "flower",
+    "color": [255, 0, 255],
+    "solid": false,
+    "gravity": false,
+    "hardness": 0.1,
+    "density": 0,
+    "breakable": true
+  },
+  {
+    "id": 21,
+    "name": "cactus",
+    "color": [0, 255, 0],
+    "solid": true,
+    "gravity": false,
+    "hardness": 0.5,
+    "density": 500,
+    "breakable": true
+  },
+  {
+    "id": 22,
+    "name": "snow_layer",
+    "color": [255, 255, 255],
+    "solid": false,
+    "gravity": false,
+    "hardness": 0.1,
+    "density": 0,
+    "breakable": true
+  },
+  {
+    "id": 23,
+    "name": "leaves",
+    "color": [34, 139, 34],
+    "solid": false,
+    "gravity": false,
+    "hardness": 0.2,
+    "density": 0,
+    "breakable": true
   }
 ]

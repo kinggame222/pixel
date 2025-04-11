@@ -39,18 +39,22 @@ from systems.multi_block_system import MultiBlockSystem
 from systems.extractor_system import ExtractorSystem
 from utils.background import generate_clouds, generate_hills, generate_stars, draw_background
 
+# Import GPU detection
+from utils.gpu_detection import GPU_AVAILABLE, detect_gpu
+
 # --- Game Settings ---
 DEBUG_MODE = True          # Enable debug mode
 SAVE_FILE = "world.json"   # Path to the save file
-SEED = 122                  # World generation seedd
+SEED = config.SEED                 # World generation seedd
 ENABLE_CHUNK_CACHE = True  # Enable chunk caching for performanced
 MAX_ACTIVE_CHUNKS = 200    # Maximum active chunks to render
 PERFORMANCE_MONITOR = True # Show performance stats 
 VIEW_DISTANCE_MULTIPLIER = 2.0  # View distance multiplier
-CHUNK_LOAD_RADIUS = 4     # Smaller initial radius for faster generation
-CHUNK_UNLOAD_DISTANCE = 4  # Keep more chunks loaded
-CHUNK_GEN_THREAD_COUNT = 2 # Number of threads for chunk generation
-ENABLE_INFINITE_WORLD = True  # Enable infinite world generation
+CHUNK_LOAD_RADIUS = 5     # Smaller initial radius for faster generation
+CHUNK_UNLOAD_DISTANCE = 5  # Keep more chunks loaded
+CHUNK_GEN_THREAD_COUNT = 4 # Number of threads for chunk generation
+ENABLE_INFINITE_WORLD = True  # Enable infinitle world generation
+USE_GPU_GENERATION = True  # Utiliser le GPU pour la génération si disponible
 
 def find_spawn_position():
     """Finds a safe spawn position for the player above the ground."""
@@ -259,14 +263,37 @@ chunk_workers = start_chunk_workers(CHUNK_GEN_THREAD_COUNT, SEED)
 
 # Initialize game state
 if os.path.exists(SAVE_FILE):
-    load_world_from_file(SAVE_FILE, storage_system)
+    print(f"Save file found: {SAVE_FILE}")
+    success = load_world_from_file(SAVE_FILE, storage_system)
+    if success:
+        print(f"Successfully loaded {len(loaded_chunks)} chunks from save file")
+    else:
+        print("Failed to load world from save file, generating new world")
+        # Regenerate world with the specified seed
+        random.seed(SEED)
+        np.random.seed(SEED)
+else:
+    print(f"No save file found at {SAVE_FILE}, generating new world")
+    # Generate new world with the specified seed
+    random.seed(SEED)
+    np.random.seed(SEED)
 
-# Explicitly ensure that the origin chunk is loaded
-if (0, 0) not in loaded_chunks:
-    print("CRITICAL: Origin chunk not loaded, generating...")
-    generate_chunk(0, 0, 1)
-    print("CRITICAL: Origin chunk generated.")
+# Explicitly verify that chunks are loaded correctly
+with chunk_lock:
+    if len(loaded_chunks) == 0:
+        print("WARNING: No chunks loaded after initialization. Generating emergency chunks.")
+    else:
+        print(f"Loaded chunks: {len(loaded_chunks)}")
+        # Print first few chunks for verification
+        chunk_list = list(loaded_chunks.keys())[:5]
+        print(f"First chunks: {chunk_list}")
     
+    # Explicitly ensure that the origin chunk is loaded
+    if (0, 0) not in loaded_chunks:
+        print("CRITICAL: Origin chunk not loaded, generating...")
+        generate_chunk(0, 0, SEED)
+        print("CRITICAL: Origin chunk generated.")
+
 # Get initial player position
 player_x, player_y = find_spawn_position()
 player = Player(player_x, player_y)
@@ -323,6 +350,14 @@ background_height = screen_height
 cloud_layer = generate_clouds(background_width, background_height, SEED)
 hill_layers = generate_hills(background_width, background_height, 2, SEED)
 star_layer = generate_stars(background_width, background_height, SEED)
+
+# Check for GPU at startup
+if USE_GPU_GENERATION:
+    if detect_gpu():
+        print("GPU détecté et activé pour la génération de terrain!")
+    else:
+        print("Aucun GPU compatible détecté, utilisation du CPU pour la génération.")
+        USE_GPU_GENERATION = False
 
 # Main Game Loop
 if __name__ == '__main__':

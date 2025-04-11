@@ -4,8 +4,24 @@ import queue
 import time
 import json
 import os
+import traceback
 from world.map_generation import generate_chunk as gen_chunk_terrain
 from core import config
+
+# Importer la détection GPU et génération GPU
+from utils.gpu_detection import GPU_AVAILABLE, detect_gpu
+# Import conditionnel pour la génération GPU
+GPU_GENERATION = False
+try:
+    from world.gpu_map_generation import generate_chunk_gpu
+    GPU_GENERATION = GPU_AVAILABLE
+except ImportError:
+    GPU_GENERATION = False
+
+if GPU_AVAILABLE:
+    print("GPU détecté! Utilisation de l'accélération GPU pour la génération de terrain.")
+else:
+    print("Aucun GPU compatible détecté. Utilisation du CPU pour la génération de terrain.")
 
 # Global variables to store world data
 loaded_chunks = {}  # Dictionary to store loaded chunks {(chunk_x, chunk_y): numpy_array}
@@ -30,7 +46,7 @@ def get_block_at(block_x, block_y):
             # Try to generate the chunk on-demand if needed
             if chunk_x == 0 and chunk_y == 0:
                 print(f"Auto-generating origin chunk at ({chunk_x}, {chunk_y}) in get_block_at")
-                generate_chunk(chunk_x, chunk_y, 1)  # Use seed 1 by default
+                generate_chunk(chunk_x, chunk_y, config.SEED)  # Use seed 1 by default
             return config.EMPTY  # Default to empty if chunk not loaded
     
         # Calculate position within chunk
@@ -127,7 +143,7 @@ def stop_chunk_workers(workers):
     # Wait for workers to finish
     for worker in workers:
         if worker.is_alive():
-            worker.join(0.5)
+            worker.join(0.1)
 
 def generate_chunk(chunk_x, chunk_y, seed):
     """Generate a new chunk at the given position."""
@@ -138,8 +154,13 @@ def generate_chunk(chunk_x, chunk_y, seed):
     chunk.fill(config.EMPTY)
     
     try:
-        # Import map generation and generate terrain for this chunk
-        chunk = gen_chunk_terrain(chunk, chunk_x, chunk_y, seed)
+        # Utiliser la génération GPU si disponible
+        if GPU_GENERATION:
+            print(f"Using GPU generation for chunk ({chunk_x}, {chunk_y})")
+            chunk = generate_chunk_gpu(chunk_x, chunk_y, seed)
+        else:
+            print(f"Using CPU generation for chunk ({chunk_x}, {chunk_y})")
+            chunk = gen_chunk_terrain(chunk, chunk_x, chunk_y, seed)
     except ImportError:
         print(f"Map generation module not found for ({chunk_x}, {chunk_y}). Using empty chunk.")
     except Exception as e:
@@ -286,7 +307,7 @@ def save_world_to_file(filename, storage_system=None):
             "chunks": chunk_data,
             "player_x": 0,  # Example player data
             "player_y": 0,
-            "seed": 1
+            "seed": config.SEED
         }
         
         # Save the world data to the file
@@ -298,51 +319,64 @@ def save_world_to_file(filename, storage_system=None):
         print(f"Error saving world: {e}")
 
 def load_world_from_file(filename, storage_system=None):
-    """Load the world state from a file."""
-    global loaded_chunks, modified_chunks
-    
-    print(f"Starting load_world_from_file with {filename}")
-    
-    if not os.path.exists(filename):
-        print(f"No world file found at {filename}")
-        print("Ensuring origin chunk exists...")
-        generate_chunk(0, 0, 1)
-        return False
-        
+    """Load the world from a file."""
+    print(f"Loading world from {filename}...")
     try:
-        with open(filename, "r") as f:
-            world_data = json.load(f)
+        with open(filename, 'r') as f:
+            data = json.load(f)
         
-        # Clear existing world data
-        loaded_chunks = {}
-        modified_chunks = set()
+        # Load the seed
+        seed = data.get("seed", 1)
+        print(f"Loaded seed: {seed}")
         
-        # Load chunks
-        if "chunks" in world_data:
-            for pos_str, chunk_data in world_data["chunks"].items():
-                chunk_x, chunk_y = map(int, pos_str.split(","))
-                chunk = np.array(chunk_data, dtype=np.int32)
-                loaded_chunks[(chunk_x, chunk_y)] = chunk
+        # Load chunk data with proper locking
+        with chunk_lock:
+            # Clear existing chunks to prevent conflicts
+            loaded_chunks.clear()
+            modified_chunks.clear()
+            
+            # Load chunks from file
+            chunk_data = data.get('chunks', {})
+            print(f"Found {len(chunk_data)} chunks in save file")
+            
+            for coord_str, chunk_array in chunk_data.items():
+                try:
+                    # Parse chunk coordinates
+                    x_str, y_str = coord_str.strip('()').split(',')
+                    chunk_x, chunk_y = int(x_str), int(y_str)
+                    
+                    # Convert chunk data to numpy array
+                    chunk = np.array(chunk_array, dtype=np.int32)
+                    
+                    # Ensure correct chunk dimensions
+                    if chunk.shape != (config.CHUNK_SIZE, config.CHUNK_SIZE):
+                        print(f"Warning: Chunk at {chunk_x},{chunk_y} has wrong dimensions {chunk.shape}, resizing")
+                        # Resize chunk to correct dimensions if needed
+                        new_chunk = np.zeros((config.CHUNK_SIZE, config.CHUNK_SIZE), dtype=np.int32)
+                        min_y = min(chunk.shape[0], config.CHUNK_SIZE)
+                        min_x = min(chunk.shape[1], config.CHUNK_SIZE)
+                        new_chunk[:min_y, :min_x] = chunk[:min_y, :min_x]
+                        chunk = new_chunk
+                    
+                    # Store the chunk
+                    loaded_chunks[(chunk_x, chunk_y)] = chunk
+                    print(f"Loaded chunk at ({chunk_x}, {chunk_y})")
+                    
+                except Exception as e:
+                    print(f"Error loading chunk {coord_str}: {e}")
+                    continue
         
-        print(f"World loaded from {filename}")
-
+        # Load additional data (storage, machines, etc.)
+        if 'storage' in data and storage_system:
+            storage_system.load_from_save_data(data['storage'])
+        
+        print(f"World loaded successfully with {len(loaded_chunks)} chunks")
+        return True
+    
     except Exception as e:
         print(f"Error loading world: {e}")
-
-    # Ensure the origin chunk exists regardless of load success/failure
-    print("Checking for origin chunk...")
-    if (0, 0) in loaded_chunks:
-        print("Origin chunk found in loaded chunks")
-    else:
-        print("Origin chunk not found, generating...")
-        generate_chunk(0, 0, 1)
-
-    # Load storage data if storage system is provided
-    if storage_system:
-        storage_system.load_from_file()
-
-    print(f"Loaded chunks keys: {list(loaded_chunks.keys())}")
-    return True
+        traceback.print_exc()
+        return False
 
 def ensure_origin_chunk_exists():
     """Ensure the origin chunk (0,0) exists."""

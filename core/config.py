@@ -1,10 +1,11 @@
 import json
 import os
+import time
 
 # --- Game Configuration ---
 
 PIXEL_SIZE = 4
-
+SEED = int(time.time())  # Seed for world generation (non-deterministic)
 PLAYER_WIDTH = 4 * PIXEL_SIZE
 PLAYER_HEIGHT = 5 * PIXEL_SIZE
 PLAYER_SPEED = 500
@@ -21,7 +22,7 @@ FPS_CAP = 60
 # --- Physics ---
 GRAVITY = 500
 JUMP_SPEED = -300
-JETPACK_SPEED = 200
+JETPACK_SPEED = 500
 
 # --- Paths ---
 # Get the base directory (pixel folder)
@@ -66,6 +67,9 @@ for block in BLOCK_PROPERTIES:
 if "ORE_PROCESSOR" not in globals():
     print("Warning: ORE_PROCESSOR not found in blocks.json, using default ID 12")
     globals()["ORE_PROCESSOR"] = 12
+
+# Add Snow Block ID
+SNOW_BLOCK = 20
 
 # --- Colors ---
 COLOR_FPS = (255, 255, 0)

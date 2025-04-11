@@ -5,9 +5,11 @@ import core.config as config
 from scipy.ndimage import gaussian_filter
 import math
 
+from world.biomes import get_biome
+
 # Create a simple Perlin noise implementation
 class PerlinNoise:
-    def __init__(self, seed=0):
+    def __init__(self, seed=config.SEED):
         random.seed(seed)
         self.p = list(range(256))
         random.shuffle(self.p)
@@ -67,7 +69,7 @@ def octave_noise(perlin, x, y, octaves=1, persistence=0.5, lacunarity=2.0):
     return total / max_value if max_value > 0 else 0
 
 def generate_chunk(chunk_array, chunk_x, chunk_y, seed):
-    """Generates terrain for a chunk in Terraria style with consistent layering."""
+    """Generates terrain for a chunk in Terraria style with biomes."""
     # Use a fixed seed for the entire world
     world_seed = seed
     perlin = PerlinNoise(seed=world_seed)
@@ -76,15 +78,21 @@ def generate_chunk(chunk_array, chunk_x, chunk_y, seed):
     world_offset_x = chunk_x * config.CHUNK_SIZE
     world_offset_y = chunk_y * config.CHUNK_SIZE
     
-    # Constants for world generation - ADJUSTED FOR MORE FEATURES
-    SURFACE_LEVEL = 25  # Global surface level (reduced to make sure we see surface)
-    SURFACE_VARIATION = 12  # Increased variation for more interesting terrain
-    DIRT_DEPTH = 5  # Depth of dirt layer below surface
+    # Select biome based on world position
+    biome = get_biome(world_offset_x, world_offset_y, seed)
+    
+    # Constants from biome properties
+    SURFACE_BLOCK = biome.surface_block
+    DIRT_DEPTH = biome.dirt_depth
+    TREE_DENSITY = biome.tree_density
+    ORE_RARITY = biome.ore_rarity
+    BASE_HEIGHT = biome.base_height
+    HEIGHT_VARIATION = biome.height_variation
     
     # Scale factors for noise
-    terrain_scale_x = 0.02  # Large number = more frequent hills
+    terrain_scale_x = 0.015  # Reduced for wider hills
     terrain_scale_y = 0.01  # Variation of chunks vertically
-    cave_scale = 0.07  # Scale for cave system (bigger = smaller caves)
+    cave_scale = 0.05  # Scale for cave system (bigger = smaller caves)
     ore_scale = 0.04  # Scale for ore distribution
     
     # Calculate absolute vertical position of this chunk in the world
@@ -99,16 +107,22 @@ def generate_chunk(chunk_array, chunk_x, chunk_y, seed):
     for x in range(config.CHUNK_SIZE):
         world_x = world_offset_x + x
         
+        # Add low-frequency noise for large-scale terrain variation
+        large_scale_variation = octave_noise(perlin, world_x * 0.001, 0, octaves=2) * 15  # Low-frequency noise
+        
         # Calculate surface height using 1D noise for the x-coordinate
         # This ensures consistent terrain across the x-axis
-        noise_val = octave_noise(perlin, world_x * terrain_scale_x, 0, octaves=4)
+        noise_val = octave_noise(perlin, world_x * terrain_scale_x, 0, octaves=6)  # Increased octaves
+        
+        # Variable base height using noise
+        base_offset = octave_noise(perlin, world_x * 0.005, 0, octaves=2) * 10  # Smaller scale for base variation
         
         # Map noise to surface height
-        local_surface = SURFACE_LEVEL + int(SURFACE_VARIATION * (noise_val * 2 - 1))
+        local_surface = BASE_HEIGHT + int(base_offset) + int(HEIGHT_VARIATION * (noise_val * 2 - 1)) + int(large_scale_variation)
         heightmap[x] = local_surface
     
-    # Apply slight smoothing to the heightmap
-    heightmap = gaussian_filter(heightmap, sigma=1.5).astype(int)
+    # Apply more aggressive smoothing to the heightmap
+    heightmap = gaussian_filter(heightmap, sigma=3.0).astype(int)  # Increased sigma
     
     # STEP 2: Fill the chunk with appropriate blocks based on its depth
     for x in range(config.CHUNK_SIZE):
@@ -128,7 +142,7 @@ def generate_chunk(chunk_array, chunk_x, chunk_y, seed):
                 chunk_array[y, x] = config.EMPTY
             elif depth == 0:
                 # Surface block (grass instead of dirt)
-                chunk_array[y, x] = config.GRASS
+                chunk_array[y, x] = SURFACE_BLOCK
             elif depth <= DIRT_DEPTH:
                 # Dirt layer
                 chunk_array[y, x] = config.DIRT
@@ -143,11 +157,11 @@ def generate_chunk(chunk_array, chunk_x, chunk_y, seed):
                 ore_noise_3 = octave_noise(perlin, world_x * ore_scale * 0.5, world_y * ore_scale * 0.5, octaves=4)
                 
                 # Depth-based ore distribution - INCREASED ORE GENERATION
-                if depth > 30 and ore_noise_1 > 0.75:  # Deep ores (diamond) - more common now
+                if depth > 30 and ore_noise_1 > 0.75 * ORE_RARITY:  # Deep ores (diamond) - more common now
                     chunk_array[y, x] = config.DIAMOND_ORE
-                elif depth > 20 and ore_noise_2 > 0.70:  # Medium depth ores (iron) - more common
+                elif depth > 20 and ore_noise_2 > 0.70 * ORE_RARITY:  # Medium depth ores (iron) - more common
                     chunk_array[y, x] = config.IRON_ORE
-                elif depth > 5 and ore_noise_3 > 0.68:  # More common shallow ores
+                elif depth > 5 and ore_noise_3 > 0.68 * ORE_RARITY:  # More common shallow ores
                     chunk_array[y, x] = config.GRAVEL
                 # Add sand patches using noise
                 elif 3 < depth < 20 and ore_noise_2 > 0.80:
@@ -181,97 +195,40 @@ def generate_chunk(chunk_array, chunk_x, chunk_y, seed):
                 
                 # Cave threshold increases with depth (bigger caves deeper down)
                 # but with a maximum size
-                cave_threshold = min(0.6, 0.45 + depth * 0.001)
+                cave_threshold = min(0.7, 0.55 + depth * 0.001)  # Adjusted threshold
                 
                 if combined_cave > cave_threshold:
                     chunk_array[y, x] = config.EMPTY
     
-    # STEP 4: Generate trees (only on surface chunks)
-    # SIGNIFICANTLY IMPROVED TREE GENERATION
-    forced_tree = False  # Flag to ensure at least one tree in appropriate chunks
-    
-    # Only try to place trees if this chunk contains the surface
-    min_height_in_chunk = min(heightmap)
-    max_height_in_chunk = max(heightmap)
-    
-    # Check if this chunk contains the surface level
-    if world_offset_y <= max_height_in_chunk and world_offset_y + config.CHUNK_SIZE >= min_height_in_chunk:
-        # New forest distribution noise - INCREASED FOREST DENSITY
-        forest_noise = octave_noise(perlin, chunk_x * 0.3, chunk_y * 0.3, octaves=2)
-        # Higher value = denser forest (increased from 0.5/0.15 to 0.7/0.3)
-        forest_density = 0.7 if forest_noise > 0.5 else 0.3
-        
-        # Track potential tree positions for better distribution
-        potential_tree_positions = []
-        
-        for x in range(config.CHUNK_SIZE):
-            world_x = world_offset_x + x
-            surface_height = heightmap[x]
-            
-            # Check if the surface is within this chunk's y-range
-            local_surface_y = surface_height - world_offset_y
-            
-            if 0 <= local_surface_y < config.CHUNK_SIZE - 6:  # Ensure room for tree
-                # Calculate the y-coordinate of the surface in this chunk
-                
-                # Determine if terrain is flat enough for a tree
-                flat_enough = True
-                if x > 0 and x < config.CHUNK_SIZE - 1:
-                    height_diff = abs(heightmap[x-1] - heightmap[x+1])
-                    if height_diff > 1:
-                        flat_enough = False
-                
-                if flat_enough:
-                    # Add this position to potential tree positions
-                    potential_tree_positions.append((x, local_surface_y))
-        
-        # If we have potential spots, place trees
-        if potential_tree_positions:
-            # Ensure at least one tree in each surface chunk that has space
-            num_trees = max(1, int(len(potential_tree_positions) * forest_density * 0.5))
-            
-            # Randomly select positions for trees
-            np.random.seed(int(chunk_x * 10000 + chunk_y + seed))
-            if len(potential_tree_positions) > 0:
-                tree_indices = np.random.choice(
-                    len(potential_tree_positions),
-                    size=min(num_trees, len(potential_tree_positions)),
-                    replace=False
-                )
-                
-                # Place trees at selected positions
-                for index in tree_indices:
-                    x, local_surface_y = potential_tree_positions[index]
-                    
-                    # Randomize tree height between 4-7 blocks
-                    tree_height = np.random.randint(4, 8)
-                    
-                    # Tree trunk
-                    for ty in range(1, tree_height + 1):
-                        tree_y = local_surface_y - ty
-                        if 0 <= tree_y < config.CHUNK_SIZE:
-                            chunk_array[tree_y, x] = config.WOOD
-                    
-                    # Tree canopy/leaves - now using WOOD for leaves as a placeholder
-                    # In a real implementation, you'd use a dedicated LEAVES block type
-                    for ly in range(tree_height - 3, tree_height + 1):
-                        leaf_y = local_surface_y - ly
-                        if 0 <= leaf_y < config.CHUNK_SIZE:
-                            # Wider at the middle, narrower at the top
-                            leaf_width = 3 if ly == tree_height - 2 else 2
-                            
-                            for lx in range(-leaf_width, leaf_width + 1):
-                                if 0 <= x + lx < config.CHUNK_SIZE:
-                                    # Skip if it's the trunk position
-                                    if lx == 0 and ly < tree_height:
-                                        continue
-                                    
-                                    # Place leaf if position is empty
-                                    if chunk_array[leaf_y, x + lx] == config.EMPTY:
-                                        chunk_array[leaf_y, x + lx] = config.WOOD  # Use WOOD for leaves
-    
+    # STEP 4: Generate trees and biome-specific decorations
+    for x in range(config.CHUNK_SIZE):
+        surface_height = heightmap[x]
+        local_surface_y = surface_height - world_offset_y
+
+        if 0 <= local_surface_y < config.CHUNK_SIZE:
+            # Add biome-specific decorations
+            if biome.name == "Plains" and random.random() < 0.1:
+                chunk_array[local_surface_y - 1, x] = config.FLOWER  # Add flowers
+            elif biome.name == "Desert" and random.random() < 0.05:
+                chunk_array[local_surface_y - 1, x] = config.CACTUS  # Add cacti
+            elif biome.name == "Snow" and random.random() < 0.1:
+                chunk_array[local_surface_y, x] = config.SNOW_LAYER  # Add snow layers
+
+            # Generate trees with varied shapes
+            if random.random() < TREE_DENSITY:
+                tree_height = random.randint(4, 8)
+                for ty in range(tree_height):
+                    if 0 <= local_surface_y - ty < config.CHUNK_SIZE:
+                        chunk_array[local_surface_y - ty, x] = config.WOOD
+                for ly in range(tree_height - 2, tree_height + 1):
+                    leaf_width = 2 if ly == tree_height else 3
+                    for lx in range(-leaf_width, leaf_width + 1):
+                        if 0 <= x + lx < config.CHUNK_SIZE and 0 <= local_surface_y - ly < config.CHUNK_SIZE:
+                            if chunk_array[local_surface_y - ly, x + lx] == config.EMPTY:
+                                chunk_array[local_surface_y - ly, x + lx] = config.LEAVES
+
     # STEP 5: Generate water pools - IMPROVED WATER GENERATION
-    water_placed = True  # Track if water has been placed in this chunk
+    water_placed = False  # Track if water has been placed in this chunk
     
     for x in range(config.CHUNK_SIZE):
         surface_height = heightmap[x]
@@ -295,19 +252,16 @@ def generate_chunk(chunk_array, chunk_x, chunk_y, seed):
                     
                     for wy in range(1, water_depth + 1):
                         water_y = local_surface_y + wy
-                        if 0 <= water_y < config.CHUNK_SIZE and chunk_array[water_y-1, x] != config.EMPTY:
-                            # Only place water above solid blocks and in empty space
-                            if chunk_array[water_y, x] == config.EMPTY:
-                                chunk_array[water_y, x] = config.WATER
-                                water_placed = True
-                                
-                                # Add water to adjacent blocks if they're empty, for wider pools
-                                for dx in [-1, 1]:
-                                    if 0 <= x + dx < config.CHUNK_SIZE:
-                                        if chunk_array[water_y, x + dx] == config.EMPTY:
-                                            # Make sure there's solid ground beneath
-                                            if water_y + 1 >= config.CHUNK_SIZE or chunk_array[water_y+1, x+dx] != config.EMPTY:
-                                                chunk_array[water_y, x + dx] = config.WATER
+                        if 0 <= water_y < config.CHUNK_SIZE and chunk_array[water_y, x] == config.EMPTY:
+                            chunk_array[water_y, x] = config.WATER
+                            water_placed = True
+                            
+                            # Add water to adjacent blocks if they're empty, for wider pools
+                            for dx in [-1, 1]:
+                                if 0 <= x + dx < config.CHUNK_SIZE:
+                                    if chunk_array[water_y, x + dx] == config.EMPTY:
+                                        if water_y + 1 >= config.CHUNK_SIZE or chunk_array[water_y+1, x+dx] != config.EMPTY:
+                                            chunk_array[water_y, x + dx] = config.WATER
     
     # STEP 6: Add bedrock at the very bottom of the world
     if world_offset_y + config.CHUNK_SIZE > 200:  # At depth 200+
