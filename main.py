@@ -42,13 +42,13 @@ from utils.background import generate_clouds, generate_hills, generate_stars, dr
 # --- Game Settings ---
 DEBUG_MODE = True          # Enable debug mode
 SAVE_FILE = "world.json"   # Path to the save file
-SEED = 1                  # World generation seedd
+SEED = 122                  # World generation seedd
 ENABLE_CHUNK_CACHE = True  # Enable chunk caching for performanced
 MAX_ACTIVE_CHUNKS = 200    # Maximum active chunks to render
 PERFORMANCE_MONITOR = True # Show performance stats 
 VIEW_DISTANCE_MULTIPLIER = 2.0  # View distance multiplier
-CHUNK_LOAD_RADIUS = 6     # Smaller initial radius for faster generation
-CHUNK_UNLOAD_DISTANCE = 6  # Keep more chunks loaded
+CHUNK_LOAD_RADIUS = 4     # Smaller initial radius for faster generation
+CHUNK_UNLOAD_DISTANCE = 4  # Keep more chunks loaded
 CHUNK_GEN_THREAD_COUNT = 2 # Number of threads for chunk generation
 ENABLE_INFINITE_WORLD = True  # Enable infinite world generation
 

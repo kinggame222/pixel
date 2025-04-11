@@ -271,7 +271,7 @@ def generate_chunk(chunk_array, chunk_x, chunk_y, seed):
                                         chunk_array[leaf_y, x + lx] = config.WOOD  # Use WOOD for leaves
     
     # STEP 5: Generate water pools - IMPROVED WATER GENERATION
-    water_placed = False  # Track if water has been placed in this chunk
+    water_placed = True  # Track if water has been placed in this chunk
     
     for x in range(config.CHUNK_SIZE):
         surface_height = heightmap[x]
