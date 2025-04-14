@@ -42,51 +42,70 @@ def get_block_coords_in_chunk(block_world_x, block_world_y):
     local_y = int(block_world_y // config.PIXEL_SIZE) % config.CHUNK_SIZE
     return local_x, local_y
 
-def get_block_at(block_world_x, block_world_y):
-    chunk_x = int(block_world_x // (config.CHUNK_SIZE * config.PIXEL_SIZE))
-    chunk_y = int(block_world_y // (config.CHUNK_SIZE * config.PIXEL_SIZE))
+def get_block_at(world_x, world_y):
+    """Gets the block type at the given world coordinates."""
+    chunk_x, chunk_y = get_chunk_coords(world_x, world_y)
+    local_x, local_y = world_x % config.CHUNK_SIZE, world_y % config.CHUNK_SIZE
 
-    with chunk_lock:
-        chunk = loaded_chunks.get((chunk_x, chunk_y))
-        if chunk is None:
-            return config.EMPTY
-
-        local_x = int(block_world_x // config.PIXEL_SIZE) % config.CHUNK_SIZE
-        local_y = int(block_world_y // config.PIXEL_SIZE) % config.CHUNK_SIZE
-
-        if 0 <= local_y < config.CHUNK_SIZE and 0 <= local_x < config.CHUNK_SIZE:
-            return chunk[local_y, local_x]
-        else:
-            print(f"Warning: Calculated local coords ({local_x}, {local_y}) out of bounds for chunk ({chunk_x}, {chunk_y}). World coords: ({block_world_x}, {block_world_y})")
-            return config.EMPTY
-
-def set_block_at(block_world_x, block_world_y, block_type):
-    chunk_x = int(block_world_x // (config.CHUNK_SIZE * config.PIXEL_SIZE))
-    chunk_y = int(block_world_y // (config.CHUNK_SIZE * config.PIXEL_SIZE))
-
-    with chunk_lock:
-        chunk = loaded_chunks.get((chunk_x, chunk_y))
-        if chunk is None:
-            print(f"Warning: Attempted to set block in non-loaded chunk ({chunk_x}, {chunk_y})")
-            return False
-
-        local_x = int(block_world_x // config.PIXEL_SIZE) % config.CHUNK_SIZE
-        local_y = int(block_world_y // config.PIXEL_SIZE) % config.CHUNK_SIZE
-
-        if not (0 <= local_y < config.CHUNK_SIZE and 0 <= local_x < config.CHUNK_SIZE):
-            print(f"Warning: Attempted to set block out of bounds at local coords ({local_x}, {local_y}) in chunk ({chunk_x}, {chunk_y}). World coords: ({block_world_x}, {block_world_y})")
-            return False
-
-        if chunk[local_y, local_x] != block_type:
-            chunk[local_y, local_x] = block_type
-            modified_chunks.add((chunk_x, chunk_y))
-            return True
-        return False
-
-def mark_chunk_modified(chunk_x, chunk_y):
     with chunk_lock:
         if (chunk_x, chunk_y) in loaded_chunks:
-            modified_chunks.add((chunk_x, chunk_y))
+            block_type = loaded_chunks[(chunk_x, chunk_y)][local_y, local_x]
+            # --- DEBUG PRINT (Commented out for performance) ---
+            # print(f"[DEBUG get_block_at] Coords ({world_x},{world_y}) -> Chunk ({chunk_x},{chunk_y}), Local ({local_x},{local_y}) -> Type: {block_type}")
+            # --- END DEBUG ---
+            return block_type
+        else:
+            # --- DEBUG PRINT (Commented out for performance) ---
+            # print(f"[DEBUG get_block_at] Coords ({world_x},{world_y}) -> Chunk ({chunk_x},{chunk_y}) NOT LOADED")
+            # --- END DEBUG ---
+            return config.EMPTY
+
+def set_block_at(world_x, world_y, block_type):
+    """Sets the block type at the given world coordinates."""
+    chunk_x, chunk_y = get_chunk_coords(world_x, world_y)
+    local_x, local_y = world_x % config.CHUNK_SIZE, world_y % config.CHUNK_SIZE
+
+    with chunk_lock:
+        if (chunk_x, chunk_y) in loaded_chunks:
+            try:
+                # --- DEBUG PRINT (Commented out for performance) ---
+                # old_type = loaded_chunks[(chunk_x, chunk_y)][local_y, local_x]
+                # print(f"[DEBUG set_block_at] Setting block at ({world_x},{world_y}) [Chunk ({chunk_x},{chunk_y}), Local ({local_x},{local_y})] from {old_type} to {block_type}")
+                # --- END DEBUG ---
+
+                loaded_chunks[(chunk_x, chunk_y)][local_y, local_x] = block_type
+                mark_chunk_modified(chunk_x, chunk_y) # Ensure modification is marked
+
+                # --- DEBUG PRINT (Commented out for performance) ---
+                # Verify immediately after setting
+                # new_type = loaded_chunks[(chunk_x, chunk_y)][local_y, local_x]
+                # print(f"[DEBUG set_block_at] Verification: Block at ({local_y},{local_x}) in chunk ({chunk_x},{chunk_y}) is now {new_type}")
+                # if (chunk_x, chunk_y) in modified_chunks:
+                #     print(f"[DEBUG set_block_at] Chunk ({chunk_x},{chunk_y}) is marked as modified.")
+                # else:
+                #     print(f"[DEBUG set_block_at] WARNING: Chunk ({chunk_x},{chunk_y}) was NOT marked as modified.")
+                # --- END DEBUG ---
+
+                return True # Indicate success
+            except IndexError:
+                print(f"Error: Local coordinates ({local_x}, {local_y}) out of bounds for chunk ({chunk_x}, {chunk_y}).")
+                return False
+            except Exception as e:
+                print(f"Error setting block at ({world_x}, {world_y}): {e}")
+                traceback.print_exc()
+                return False
+        else:
+            # --- DEBUG PRINT (Commented out for performance) ---
+            # print(f"[DEBUG set_block_at] Attempted to set block in unloaded chunk ({chunk_x}, {chunk_y}) at ({world_x},{world_y})")
+            # --- END DEBUG ---
+            return False # Indicate failure
+
+def mark_chunk_modified(chunk_x, chunk_y):
+    """Marks a chunk as modified."""
+    with chunk_lock:
+        if (chunk_x, chunk_y) in loaded_chunks: # Only mark if it's actually loaded
+             modified_chunks.add((chunk_x, chunk_y))
+             # print(f"Chunk ({chunk_x}, {chunk_y}) marked as modified.") # Optional debug
 
 def generate_chunk_data(chunk_x, chunk_y, seed):
     if GPU_GENERATION_ENABLED and generate_chunk_gpu:
@@ -253,109 +272,140 @@ def get_active_chunks(world_x, world_y, screen_width, screen_height, view_multip
 
     return active_chunks_list
 
-def save_world_to_file(filename, storage_system=None, player_pos=(0,0)):
-    print(f"Saving world to {filename}...")
-    saved_count = 0
-    world_data = {}
-
-    chunk_data_to_save = {}
-    with chunk_lock:
-        chunks_to_process = list(modified_chunks)
-
-        print(f"Found {len(chunks_to_process)} modified chunks to save.")
-
-        for chunk_pos in chunks_to_process:
-            if chunk_pos in loaded_chunks:
-                chunk = loaded_chunks[chunk_pos]
-                chunk_data_to_save[f"{chunk_pos[0]},{chunk_pos[1]}"] = chunk.tolist()
-                saved_count += 1
-
-    world_data = {
-        "seed": config.SEED,
-        "player_x": player_pos[0],
-        "player_y": player_pos[1],
-        "chunks": chunk_data_to_save,
-    }
-
+def save_world_to_file(filename, storage_system, player_pos):
+    """Saves the current world state (loaded chunks, modified chunks, player position, storage) to a file."""
+    print(f"Attempting to save world to: {filename}")
     try:
+        # Ensure the directory exists only if filename includes a path
         dir_name = os.path.dirname(filename)
-        if dir_name:
+        if dir_name: # Only call makedirs if dir_name is not empty
             os.makedirs(dir_name, exist_ok=True)
             print(f"Ensured directory exists: {dir_name}")
         else:
             print("Saving to current directory, no need to create path.")
 
-        with open(filename, "w") as f:
-            json.dump(world_data, f, indent=2)
+        world_data = {
+            "seed": config.SEED,
+            "player_pos": player_pos, # Save player position as a tuple
+            "chunks": {},
+            "storage": storage_system.get_all_storage_data() # Get storage data
+        }
 
-        print(f"World saved successfully ({saved_count} chunks) to {filename}")
         with chunk_lock:
-            modified_chunks.clear()
+            print(f"Saving {len(loaded_chunks)} loaded chunks...")
+            # Save all currently loaded chunks. Consider saving only modified ones later for optimization.
+            for (cx, cy), chunk_data in loaded_chunks.items():
+                chunk_key = f"{cx},{cy}" # Use string key for JSON
+                # Convert numpy array to list for JSON serialization
+                world_data["chunks"][chunk_key] = chunk_data.tolist()
+            print(f"Finished preparing {len(world_data['chunks'])} chunks for saving.")
+
+        # Write the data to the file
+        with open(filename, 'w') as f:
+            json.dump(world_data, f, indent=2) # Use indent for readability
+
+        print(f"World saved successfully to {filename}")
 
     except Exception as e:
         print(f"Error saving world: {e}")
-        traceback.print_exc()
+        traceback.print_exc() # Print detailed traceback
 
-def load_world_from_file(filename, storage_system=None):
-    print(f"Loading world from {filename}...")
+def load_world_from_file(filename, storage_system):
+    """Loads the world state from a file."""
+    print(f"Attempting to load world from: {filename}")
     if not os.path.exists(filename):
-        print(f"Save file {filename} not found. Cannot load.")
-        return False, (0, 0)
+        print(f"Save file not found: {filename}")
+        return False, (0, 0) # Return failure and default position
 
     try:
         with open(filename, 'r') as f:
-            data = json.load(f)
+            world_data = json.load(f)
 
-        loaded_seed = data.get("seed", config.SEED)
-        config.SEED = loaded_seed
-        print(f"Loaded and set world seed: {config.SEED}")
+        # Load seed
+        loaded_seed = world_data.get("seed", config.SEED) # Use default if not found
+        config.SEED = loaded_seed # Update global config seed
+        print(f"Loaded seed: {config.SEED}")
 
-        player_x = data.get("player_x", 0)
-        player_y = data.get("player_y", 0)
-        player_pos = (player_x, player_y)
+        # Load player position (handle old format for compatibility if needed)
+        if "player_pos" in world_data:
+            player_pos = tuple(world_data["player_pos"])
+        elif "player_x" in world_data and "player_y" in world_data: # Backward compatibility
+             player_pos = (world_data["player_x"], world_data["player_y"])
+             print("Loaded player position using old format (player_x, player_y).")
+        else:
+             player_pos = (0, 0) # Default if not found
         print(f"Loaded player position: {player_pos}")
 
-        loaded_count = 0
+
+        # Load chunks
+        loaded_chunk_count = 0
+        chunks_to_load = world_data.get("chunks", {})
+        print(f"Found {len(chunks_to_load)} chunks in save file.")
+
+        with chunk_lock:
+            loaded_chunks.clear() # Clear existing chunks before loading
+            modified_chunks.clear()
+            generating_chunks.clear() # Also clear generating set
+
+            for chunk_key, chunk_list in chunks_to_load.items():
+                try:
+                    cx_str, cy_str = chunk_key.split(',')
+                    cx, cy = int(cx_str), int(cy_str)
+
+                    # --- Robustness Check ---
+                    if not isinstance(chunk_list, list):
+                        print(f"Warning: Chunk {chunk_key} data is not a list. Skipping.")
+                        continue
+
+                    try:
+                        # Attempt to convert list to numpy array
+                        chunk_array = np.array(chunk_list, dtype=np.int32)
+                    except ValueError as ve:
+                        print(f"Warning: Chunk {chunk_key} data could not be converted to array: {ve}. Skipping.")
+                        continue
+
+                    # Check shape AFTER conversion
+                    expected_shape = (config.CHUNK_SIZE, config.CHUNK_SIZE)
+                    if chunk_array.shape != expected_shape:
+                         print(f"Warning: Chunk {chunk_key} has incorrect shape {chunk_array.shape}. Expected {expected_shape}. Skipping.")
+                         continue
+                    # --- End Robustness Check ---
+
+                    loaded_chunks[(cx, cy)] = chunk_array
+                    loaded_chunk_count += 1
+                except Exception as e:
+                    # Catch other potential errors during chunk loading (e.g., key parsing)
+                    print(f"Error loading chunk {chunk_key}: {e}")
+            print(f"Successfully loaded {loaded_chunk_count} valid chunks from file.")
+
+        # Load storage system data
+        storage_data = world_data.get("storage", {})
+        storage_system.load_all_storage_data(storage_data)
+        print(f"Loaded {len(storage_data)} storage units.")
+
+
+        print(f"World loaded successfully from {filename}")
+        return True, player_pos # Return success and player position
+
+    except json.JSONDecodeError as json_err:
+        print(f"Error decoding JSON from {filename}: {json_err}")
+        print("Save file might be corrupted. Consider deleting it and starting fresh.")
+        # Clear potentially corrupted state on load failure
         with chunk_lock:
             loaded_chunks.clear()
             modified_chunks.clear()
             generating_chunks.clear()
+        return False, (0, 0) # Return failure
 
-            chunk_data = data.get('chunks', {})
-            print(f"Found {len(chunk_data)} chunks in save file.")
-
-            for coord_str, chunk_list in chunk_data.items():
-                try:
-                    x_str, y_str = coord_str.split(',')
-                    chunk_x, chunk_y = int(x_str), int(y_str)
-
-                    chunk_array = np.array(chunk_list, dtype=np.int32)
-
-                    if chunk_array.shape != (config.CHUNK_SIZE, config.CHUNK_SIZE):
-                        print(f"Warning: Chunk {coord_str} has incorrect shape {chunk_array.shape}. Skipping.")
-                        continue
-
-                    loaded_chunks[(chunk_x, chunk_y)] = chunk_array
-                    loaded_count += 1
-
-                except Exception as e:
-                    print(f"Error loading chunk data for '{coord_str}': {e}")
-                    continue
-
-        print(f"World loaded successfully with {loaded_count} chunks.")
-        ensure_origin_chunk_exists()
-        return True, player_pos
-
-    except FileNotFoundError:
-        print(f"Save file {filename} not found.")
-        return False, (0, 0)
-    except json.JSONDecodeError:
-        print(f"Error decoding JSON from save file {filename}.")
-        return False, (0, 0)
     except Exception as e:
-        print(f"An unexpected error occurred loading world: {e}")
+        print(f"Error loading world: {e}")
         traceback.print_exc()
-        return False, (0, 0)
+        # Clear potentially corrupted state on load failure
+        with chunk_lock:
+            loaded_chunks.clear()
+            modified_chunks.clear()
+            generating_chunks.clear()
+        return False, (0, 0) # Return failure
 
 def ensure_origin_chunk_exists():
     with chunk_lock:

@@ -76,6 +76,8 @@ def render_chunk(chunk, chunk_x, chunk_y, camera_x, camera_y,
                 block_x = x * config.PIXEL_SIZE
                 block_y = y * config.PIXEL_SIZE
                 render_block(surface, block_type, block_x, block_y, block_surfaces)
+                # Debug print (Commented out for performance)
+                # print(f"[DEBUG render_chunk] Rendering block type {block_type} at chunk ({chunk_x},{chunk_y}) position ({x},{y})")
     
     return surface
 

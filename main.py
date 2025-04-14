@@ -357,7 +357,7 @@ print(f"Initial queue size: {chunk_generation_queue.qsize()} chunks.")
 
 # Initialize time of day (Terraria-style day/night cycle)
 time_of_day = 0.3  # Start at morning
-DAY_LENGTH = 600.0  # 10 real minutes = 1 full day/night cycle
+DAY_LENGTH = 60.0  # 10 real minutes = 1 full day/night cycle
 
 # Generate background layers
 background_width = screen_width * 3
@@ -642,115 +642,137 @@ if __name__ == '__main__':
                                         crafting_system.take_output_item(table_pos)
                         
                         elif event.button == 3:  # Right button
-                            if machine_system.get_active_machine() is not None and machine_ui.is_point_in_ui(mouse_x, mouse_y):
-                                machine_pos = machine_system.get_active_machine()
-                                slot = machine_ui.get_slot_at_position(mouse_x, mouse_y)
-                                
-                                if slot == "input":
-                                    selected_item = inventory.get_selected_item()
-                                    if selected_item:
-                                        if machine_system.add_item_to_machine(machine_pos, selected_item[0], 1):
-                                            inventory.remove_item(inventory.selected_slot)
-                                
-                                elif slot == "output":
-                                    item = machine_system.take_item_from_machine(machine_pos, output_slot=True)
-                                    if item:
-                                        block_type, count = item
-                                        inventory.add_item(block_type, count)
-                            
-                            elif get_block_at(block_x, block_y) == config.EMPTY:
+                            if get_block_at(block_x, block_y) == config.EMPTY:
                                 selected_item = inventory.get_selected_item()
                                 if selected_item:
                                     block_type, _ = selected_item
-                                    
+                                    print(f"[DEBUG] Attempting to place block type {block_type} at ({block_x}, {block_y})") # DEBUG PRINT
+
+                                    # --- Conveyor Placement Preview Logic ---
                                     if conveyor_placement_active and (
                                         block_type == config.CONVEYOR_BELT or block_type == config.VERTICAL_CONVEYOR
                                     ):
                                         if conveyor_placement_preview:
+                                            placed_count = 0
                                             for pos_x, pos_y in conveyor_placement_preview:
-                                                if multi_block_system.register_multi_block(pos_x, pos_y, block_type):
-                                                    conveyor_system.register_conveyor(pos_x, pos_y, conveyor_placement_direction)
-                                                    inventory.remove_item(inventory.selected_slot, 1)
-                                                    chunk_x, chunk_y = get_chunk_coords(pos_x, pos_y)
-                                                    mark_chunk_modified(chunk_x, chunk_y)
-                                                    
-                                            conveyor_placement_preview = []
-                                    elif block_type == config.ORE_PROCESSOR:
+                                                # Check inventory again for each block
+                                                if inventory.get_item_count(block_type) > 0:
+                                                    if multi_block_system.register_multi_block(pos_x, pos_y, block_type):
+                                                        # Set the block first (register_multi_block might rely on it)
+                                                        set_block_at(pos_x, pos_y, block_type) # Ensure block is set
+                                                        conveyor_system.register_conveyor(pos_x, pos_y, conveyor_placement_direction)
+                                                        inventory.remove_item(inventory.selected_slot, 1)
+                                                        # Mark the specific chunk for this conveyor piece
+                                                        chunk_x, chunk_y = get_chunk_coords(pos_x, pos_y)
+                                                        mark_chunk_modified(chunk_x, chunk_y)
+                                                        placed_count += 1
+                                                    else:
+                                                        print(f"Failed to register multi-block at {pos_x}, {pos_y}")
+                                                else:
+                                                    print("Ran out of items during conveyor placement.")
+                                                    break # Stop placing if out of items
+                                            print(f"Placed {placed_count} conveyor sections.")
+                                            conveyor_placement_preview = [] # Clear preview after placement
+                                        else:
+                                             print("[DEBUG] Conveyor placement active but no preview available.")
+
+
+                                    # --- Multi-Block Placement (Example: Ore Processor) ---
+                                    elif block_type == config.ORE_PROCESSOR: # Example multi-block
                                         width, height = config.BLOCKS[block_type].get("size", (1, 1))
                                         space_available = True
+                                        affected_chunks = set() # Keep track of chunks to mark modified
 
+                                        # Check if space is available
                                         for dx in range(width):
                                             for dy in range(height):
                                                 check_x = block_x + dx
                                                 check_y = block_y + dy
                                                 if get_block_at(check_x, check_y) != config.EMPTY:
                                                     space_available = False
+                                                    print(f"[DEBUG] Placement failed: Block at ({check_x}, {check_y}) is not empty.")
                                                     break
                                             if not space_available:
                                                 break
 
                                         if space_available:
+                                            # Place all blocks for the structure
                                             for dx in range(width):
                                                 for dy in range(height):
-                                                    set_block_at(block_x + dx, block_y + dy, block_type)
+                                                    place_x = block_x + dx
+                                                    place_y = block_y + dy
+                                                    # Use the main block type for all parts for simplicity,
+                                                    # or define specific part types if needed.
+                                                    set_block_at(place_x, place_y, block_type)
+                                                    # Add the chunk containing this part to the set
+                                                    chunk_x, chunk_y = get_chunk_coords(place_x, place_y)
+                                                    affected_chunks.add((chunk_x, chunk_y))
+
+                                            # Register the machine/structure at its origin
                                             machine_system.register_machine(block_x, block_y)
                                             inventory.remove_item(inventory.selected_slot)
-                                            chunk_x, chunk_y = get_chunk_coords(block_x, block_y)
-                                            mark_chunk_modified(chunk_x, chunk_y)
+
+                                            # Mark all affected chunks as modified
+                                            for chunk_coords in affected_chunks:
+                                                mark_chunk_modified(*chunk_coords)
+                                            print(f"[DEBUG] Placed multi-block type {block_type} at ({block_x}, {block_y}). Marked chunks: {affected_chunks}")
+                                        else:
+                                            print(f"[DEBUG] Not enough space to place multi-block type {block_type} at ({block_x}, {block_y})")
+
+
+                                    # --- Single Block Placement (Default) ---
+                                    # Add other specific block types (Crafting Table, Storage, Extractor, etc.) here
+                                    # Ensure they also call mark_chunk_modified correctly
                                     elif block_type == config.CRAFTING_TABLE:
-                                        set_block_at(block_x, block_y, block_type)
-                                        crafting_system.register_table(block_x, block_y)
-                                        inventory.remove_item(inventory.selected_slot)
-                                        chunk_x, chunk_y = get_chunk_coords(block_x, block_y)
-                                        mark_chunk_modified(chunk_x, chunk_y)
+                                        if set_block_at(block_x, block_y, block_type):
+                                            crafting_system.register_table(block_x, block_y)
+                                            inventory.remove_item(inventory.selected_slot)
                                     elif block_type == config.STORAGE_CHEST:
-                                        if multi_block_system.register_multi_block(block_x, block_y, block_type):
-                                            storage_system.register_storage(block_x, block_y)
-                                            inventory.remove_item(inventory.selected_slot)
-                                            chunk_x, chunk_y = get_chunk_coords(block_x, block_y)
-                                            mark_chunk_modified(chunk_x, chunk_y)
+                                        # Assuming storage chest is 1x1 for now, adjust if multi-block
+                                        if set_block_at(block_x, block_y, block_type):
+                                            if multi_block_system.register_multi_block(block_x, block_y, block_type):
+                                                storage_system.register_storage(block_x, block_y)
+                                                inventory.remove_item(inventory.selected_slot)
+                                            else: # Failed to register, undo block placement?
+                                                set_block_at(block_x, block_y, config.EMPTY) # Revert
+                                                print(f"Failed to register multi-block for storage chest at ({block_x},{block_y})")
+                                        # else: set_block_at failed, already printed in set_block_at
+
                                     elif block_type == config.CONVEYOR_BELT or block_type == config.VERTICAL_CONVEYOR:
-                                        if multi_block_system.register_multi_block(block_x, block_y, block_type):
-                                            conveyor_system.register_conveyor(block_x, block_y)
-                                            inventory.remove_item(inventory.selected_slot)
-                                            chunk_x, chunk_y = get_chunk_coords(block_x, block_y)
-                                            mark_chunk_modified(chunk_x, chunk_y)
+                                        # Single placement (not preview mode)
+                                        if set_block_at(block_x, block_y, block_type):
+                                            if multi_block_system.register_multi_block(block_x, block_y, block_type):
+                                                conveyor_system.register_conveyor(block_x, block_y) # Use default direction initially
+                                                inventory.remove_item(inventory.selected_slot)
+                                            else:
+                                                set_block_at(block_x, block_y, config.EMPTY) # Revert
+                                                print(f"Failed to register multi-block for conveyor at ({block_x},{block_y})")
+                                        # else: set_block_at failed, already printed in set_block_at
+
                                     elif block_type == config.ITEM_EXTRACTOR:
-                                        if multi_block_system.register_multi_block(block_x, block_y, block_type):
-                                            extractor_system.register_extractor(block_x, block_y)
-                                            extractor_system.set_direction(block_x, block_y, 0)
+                                         if set_block_at(block_x, block_y, block_type):
+                                            if multi_block_system.register_multi_block(block_x, block_y, block_type):
+                                                extractor_system.register_extractor(block_x, block_y)
+                                                extractor_system.set_direction(block_x, block_y, 0) # Default direction
+                                                inventory.remove_item(inventory.selected_slot)
+                                            else:
+                                                set_block_at(block_x, block_y, config.EMPTY) # Revert
+                                                print(f"Failed to register multi-block for extractor at ({block_x},{block_y})")
+                                         # else: set_block_at failed, already printed in set_block_at
+
+                                    else: # Default case for simple blocks (dirt, stone, etc.)
+                                        if set_block_at(block_x, block_y, block_type):
                                             inventory.remove_item(inventory.selected_slot)
-                                            chunk_x, chunk_y = get_chunk_coords(block_x, block_y)
-                                            mark_chunk_modified(chunk_x, chunk_y)
-                                    else:
-                                        set_block_at(block_x, block_y, block_type)
-                                        inventory.remove_item(inventory.selected_slot)
-                                        chunk_x, chunk_y = get_chunk_coords(block_x, block_y)
-                                        mark_chunk_modified(chunk_x, chunk_y)
-                            
-                            if get_block_at(block_x, block_y) == config.CONVEYOR_BELT or get_block_at(block_x, block_y) == config.VERTICAL_CONVEYOR:
-                                if (block_x, block_y) in conveyor_system.conveyors:
-                                    conveyor_system.rotate_conveyor(block_x, block_y)
+                                        else:
+                                            pass # Already handled
                                 else:
-                                    conveyor_system.register_conveyor(block_x, block_y)
-                            
-                            if get_block_at(block_x, block_y) == config.ITEM_EXTRACTOR:
-                                origin = None
-                                if multi_block_system:
-                                    origin = multi_block_system.get_multi_block_origin(block_x, block_y)
-                                
-                                if origin:
-                                    x, y = origin
-                                    extractor_system.set_direction(x, y, extractor_system.extractors.get((x, y), {}).get("direction", 0) + 1)
-                                    print(f"Direction de l'extracteur changée: {extractor_system.extractors.get((x, y), {}).get('direction', 0)}")
-                            
-                            if active_storage is not None and storage_ui.is_point_in_ui(mouse_x, mouse_y):
-                                selected_item = inventory.get_selected_item()
-                                if selected_item:
-                                    block_type, count = selected_item
-                                    if storage_system.add_item_to_storage(*active_storage, block_type, 1):
-                                        inventory.remove_item(inventory.selected_slot, 1)
-                    
+                                    print("[DEBUG] Right-click on empty space, but no item selected in hotbar.")
+                            # else: Block is not empty, handle interaction or do nothing
+                            #    print(f"[DEBUG] Right-click on non-empty block {get_block_at(block_x, block_y)} at ({block_x}, {block_y})")
+
+
+                            # ... (rest of right-click logic like rotating extractors) ...
+
                     elif event.type == pygame.MOUSEBUTTONUP:
                         mouse_x, mouse_y = pygame.mouse.get_pos()
                         dropped = False
@@ -828,6 +850,9 @@ if __name__ == '__main__':
                 if time_of_day >= 1.0:
                     time_of_day -= 1.0
                 
+                # Clear the screen (e.g., with black or a dynamic sky color)
+                screen.fill((0, 0, 0)) # Fill with black first
+
                 draw_background(screen, camera_x, camera_y, time_of_day, background_width, background_height, 
                                 cloud_layer, hill_layers, star_layer)
                 

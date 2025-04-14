@@ -237,3 +237,37 @@ class StorageSystem:
         except Exception as e:
             print(f"Error loading storage data: {e}")
             return False
+
+    def get_all_storage_data(self):
+        """Returns all storage data in a serializable format."""
+        serializable_data = {}
+        for (x, y), data in self.storages.items():
+            # Convert tuple key (x, y) to string "x,y" for JSON compatibility
+            key = f"{x},{y}"
+            # Ensure item IDs in items dict are strings for JSON keys
+            string_items = {str(item_id): count for item_id, count in data["items"].items()}
+            serializable_data[key] = {
+                "id": str(data["id"]),  # Store UUID as string
+                "items": string_items
+            }
+        return serializable_data
+
+    def load_all_storage_data(self, data):
+        """Loads storage data from a dictionary (usually from JSON)."""
+        self.storages.clear()  # Clear existing data
+        for key, storage_data in data.items():
+            try:
+                x_str, y_str = key.split(',')
+                x, y = int(x_str), int(y_str)
+                origin = (x, y)
+
+                # Convert item ID keys back to integers
+                loaded_items = {int(item_id_str): count for item_id_str, count in storage_data.get("items", {}).items()}
+
+                self.storages[origin] = {
+                    "id": uuid.UUID(storage_data.get("id", str(uuid.uuid4()))),  # Load UUID or generate new if missing
+                    "items": loaded_items
+                }
+            except Exception as e:
+                print(f"Error loading storage data for key '{key}': {e}")
+        print(f"Finished loading data for {len(self.storages)} storage units.")
