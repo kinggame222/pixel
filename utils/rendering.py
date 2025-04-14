@@ -50,11 +50,6 @@ def render_block(surface, block_type, x, y, block_surfaces):
 def render_chunk(chunk, chunk_x, chunk_y, camera_x, camera_y, 
                 mining_animation, block_surfaces, machine_system, multi_block_system=None):
     """Renders a chunk to a surface."""
-    # Check if the chunk is in cache and not modified
-    cache_key = (chunk_x, chunk_y)
-    if cache_key in chunks.chunk_cache and cache_key not in chunks.modified_chunks:
-        return chunks.chunk_cache[cache_key]
-    
     # Create a new surface for rendering
     surface = pygame.Surface((config.CHUNK_SIZE * config.PIXEL_SIZE, config.CHUNK_SIZE * config.PIXEL_SIZE), pygame.SRCALPHA)
     surface.fill((0, 0, 0, 0))  # Fully transparent background
@@ -81,13 +76,6 @@ def render_chunk(chunk, chunk_x, chunk_y, camera_x, camera_y,
                 block_x = x * config.PIXEL_SIZE
                 block_y = y * config.PIXEL_SIZE
                 render_block(surface, block_type, block_x, block_y, block_surfaces)
-    
-    # Cache the rendered chunk
-    chunks.chunk_cache[cache_key] = surface
-    
-    # Mark as no longer modified
-    if cache_key in chunks.modified_chunks:
-        chunks.modified_chunks.remove(cache_key)
     
     return surface
 

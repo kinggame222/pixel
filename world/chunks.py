@@ -5,426 +5,376 @@ import time
 import json
 import os
 import traceback
-from world.map_generation import generate_chunk as gen_chunk_terrain
+from world.map_generation import generate_chunk as generate_chunk_terrain_cpu
 from core import config
 
-# Importer la détection GPU et génération GPU
 from utils.gpu_detection import GPU_AVAILABLE, detect_gpu
-# Import conditionnel pour la génération GPU
-GPU_GENERATION = False
+
+GPU_GENERATION_ENABLED = False
+generate_chunk_gpu = None
 try:
     from world.gpu_map_generation import generate_chunk_gpu
-    GPU_GENERATION = GPU_AVAILABLE
+    if GPU_AVAILABLE:
+        GPU_GENERATION_ENABLED = True
 except ImportError:
-    GPU_GENERATION = False
+    GPU_GENERATION_ENABLED = False
+    print("GPU map generation module not found or GPU not available.")
 
-if GPU_AVAILABLE:
-    print("GPU détecté! Utilisation de l'accélération GPU pour la génération de terrain.")
+if GPU_GENERATION_ENABLED:
+    print("GPU detected! Using GPU acceleration for terrain generation.")
 else:
-    print("Aucun GPU compatible détecté. Utilisation du CPU pour la génération de terrain.")
+    print("No compatible GPU detected or GPU module not found. Using CPU for terrain generation.")
 
-# Global variables to store world data
-loaded_chunks = {}  # Dictionary to store loaded chunks {(chunk_x, chunk_y): numpy_array}
-modified_chunks = set()  # Set to track modified chunks for saving
-chunk_cache = {}  # Dictionary to store rendered chunks for performance
-chunk_generation_queue = queue.Queue()  # Queue for chunk generation tasks
-chunk_worker_running = False  # Flag to control worker threads
-origin_chunk_backup = None  # Backup for the origin chunk
-chunk_lock = threading.RLock()  # Lock for thread-safe dictionary access
+loaded_chunks = {}
+modified_chunks = set()
+chunk_generation_queue = queue.Queue()
+chunk_worker_running = threading.Event()
+chunk_lock = threading.RLock()
+generating_chunks = set()
 
 def get_chunk_coords(block_x, block_y):
-    """Get the chunk coordinates that contain the given block position."""
-    chunk_x = int(block_x // config.CHUNK_SIZE)
-    chunk_y = int(block_y // config.CHUNK_SIZE)
+    chunk_x = int(block_x // (config.CHUNK_SIZE * config.PIXEL_SIZE))
+    chunk_y = int(block_y // (config.CHUNK_SIZE * config.PIXEL_SIZE))
     return chunk_x, chunk_y
 
-def get_block_at(block_x, block_y):
-    """Get the block type at the given position."""
-    chunk_x, chunk_y = get_chunk_coords(block_x, block_y)
-    with chunk_lock:
-        if (chunk_x, chunk_y) not in loaded_chunks:
-            # Try to generate the chunk on-demand if needed
-            if chunk_x == 0 and chunk_y == 0:
-                print(f"Auto-generating origin chunk at ({chunk_x}, {chunk_y}) in get_block_at")
-                generate_chunk(chunk_x, chunk_y, config.SEED)  # Use seed 1 by default
-            return config.EMPTY  # Default to empty if chunk not loaded
-    
-        # Calculate position within chunk
-        local_x = block_x % config.CHUNK_SIZE
-        local_y = block_y % config.CHUNK_SIZE
-        
-        return loaded_chunks[(chunk_x, chunk_y)][local_y, local_x]
+def get_block_coords_in_chunk(block_world_x, block_world_y):
+    local_x = int(block_world_x // config.PIXEL_SIZE) % config.CHUNK_SIZE
+    local_y = int(block_world_y // config.PIXEL_SIZE) % config.CHUNK_SIZE
+    return local_x, local_y
 
-def set_block_at(block_x, block_y, block_type):
-    """Set the block type at the given position."""
-    chunk_x, chunk_y = get_chunk_coords(block_x, block_y)
-    if (chunk_x, chunk_y) not in loaded_chunks:
-        return False  # Chunk not loaded
-    
-    # Calculate position within chunk
-    local_x = block_x % config.CHUNK_SIZE
-    local_y = block_y % config.CHUNK_SIZE
-    
-    # Update the block
-    loaded_chunks[(chunk_x, chunk_y)][local_y, local_x] = block_type
-    
-    # Mark the chunk as modified
-    modified_chunks.add((chunk_x, chunk_y))
-    
-    # Clear the chunk from the rendering cache
-    if (chunk_x, chunk_y) in chunk_cache:
-        del chunk_cache[(chunk_x, chunk_y)]
-    
-    return True
+def get_block_at(block_world_x, block_world_y):
+    chunk_x = int(block_world_x // (config.CHUNK_SIZE * config.PIXEL_SIZE))
+    chunk_y = int(block_world_y // (config.CHUNK_SIZE * config.PIXEL_SIZE))
+
+    with chunk_lock:
+        chunk = loaded_chunks.get((chunk_x, chunk_y))
+        if chunk is None:
+            return config.EMPTY
+
+        local_x = int(block_world_x // config.PIXEL_SIZE) % config.CHUNK_SIZE
+        local_y = int(block_world_y // config.PIXEL_SIZE) % config.CHUNK_SIZE
+
+        if 0 <= local_y < config.CHUNK_SIZE and 0 <= local_x < config.CHUNK_SIZE:
+            return chunk[local_y, local_x]
+        else:
+            print(f"Warning: Calculated local coords ({local_x}, {local_y}) out of bounds for chunk ({chunk_x}, {chunk_y}). World coords: ({block_world_x}, {block_world_y})")
+            return config.EMPTY
+
+def set_block_at(block_world_x, block_world_y, block_type):
+    chunk_x = int(block_world_x // (config.CHUNK_SIZE * config.PIXEL_SIZE))
+    chunk_y = int(block_world_y // (config.CHUNK_SIZE * config.PIXEL_SIZE))
+
+    with chunk_lock:
+        chunk = loaded_chunks.get((chunk_x, chunk_y))
+        if chunk is None:
+            print(f"Warning: Attempted to set block in non-loaded chunk ({chunk_x}, {chunk_y})")
+            return False
+
+        local_x = int(block_world_x // config.PIXEL_SIZE) % config.CHUNK_SIZE
+        local_y = int(block_world_y // config.PIXEL_SIZE) % config.CHUNK_SIZE
+
+        if not (0 <= local_y < config.CHUNK_SIZE and 0 <= local_x < config.CHUNK_SIZE):
+            print(f"Warning: Attempted to set block out of bounds at local coords ({local_x}, {local_y}) in chunk ({chunk_x}, {chunk_y}). World coords: ({block_world_x}, {block_world_y})")
+            return False
+
+        if chunk[local_y, local_x] != block_type:
+            chunk[local_y, local_x] = block_type
+            modified_chunks.add((chunk_x, chunk_y))
+            return True
+        return False
 
 def mark_chunk_modified(chunk_x, chunk_y):
-    """Mark a chunk as modified."""
-    if (chunk_x, chunk_y) in loaded_chunks:
-        modified_chunks.add((chunk_x, chunk_y))
-        
-        # Clear the chunk from the rendering cache
-        if (chunk_x, chunk_y) in chunk_cache:
-            del chunk_cache[(chunk_x, chunk_y)]
+    with chunk_lock:
+        if (chunk_x, chunk_y) in loaded_chunks:
+            modified_chunks.add((chunk_x, chunk_y))
+
+def generate_chunk_data(chunk_x, chunk_y, seed):
+    if GPU_GENERATION_ENABLED and generate_chunk_gpu:
+        try:
+            chunk_data = generate_chunk_gpu(chunk_x, chunk_y, seed)
+            if chunk_data is None or chunk_data.shape != (config.CHUNK_SIZE, config.CHUNK_SIZE):
+                raise ValueError(f"GPU generation returned invalid data: {chunk_data}")
+            return chunk_data
+        except Exception as e:
+            print(f"GPU generation failed for chunk ({chunk_x}, {chunk_y}): {e}. Falling back to CPU.")
+
+    chunk_data = np.zeros((config.CHUNK_SIZE, config.CHUNK_SIZE), dtype=np.int32)
+    chunk_data.fill(config.EMPTY)
+    try:
+        chunk_data = generate_chunk_terrain_cpu(chunk_data, chunk_x, chunk_y, seed)
+        invalid_blocks = np.isin(chunk_data, list(config.BLOCKS.keys()), invert=True)
+        if np.any(invalid_blocks):
+            print(f"Warning: CPU generation created invalid block IDs in chunk ({chunk_x}, {chunk_y}). Replacing with EMPTY.")
+            chunk_data[invalid_blocks] = config.EMPTY
+        return chunk_data
+    except Exception as e:
+        print(f"CPU generation failed for chunk ({chunk_x}, {chunk_y}): {e}")
+        traceback.print_exc()
+        return np.full((config.CHUNK_SIZE, config.CHUNK_SIZE), config.EMPTY, dtype=np.int32)
 
 def generate_chunk_worker():
-    """Worker function to generate chunks from the queue."""
-    global chunk_worker_running
-    while chunk_worker_running:
+    while chunk_worker_running.is_set():
         try:
-            # Get a task from the queue with a timeout
-            task = chunk_generation_queue.get(timeout=0.1)
-            chunk_x, chunk_y, seed = task
-            
-            # Skip if the chunk is already loaded
+            chunk_x, chunk_y, seed = chunk_generation_queue.get(timeout=0.1)
+
+            should_generate = False
             with chunk_lock:
-                if (chunk_x, chunk_y) in loaded_chunks:
+                if (chunk_x, chunk_y) not in loaded_chunks and (chunk_x, chunk_y) not in generating_chunks:
+                    generating_chunks.add((chunk_x, chunk_y))
+                    should_generate = True
+
+            if should_generate:
+                new_chunk_data = None
+                try:
+                    new_chunk_data = generate_chunk_data(chunk_x, chunk_y, seed)
+
+                    with chunk_lock:
+                        if (chunk_x, chunk_y) not in loaded_chunks:
+                            if new_chunk_data is not None:
+                                loaded_chunks[(chunk_x, chunk_y)] = new_chunk_data
+                                modified_chunks.add((chunk_x, chunk_y))
+                        generating_chunks.discard((chunk_x, chunk_y))
+                except Exception as e:
+                    print(f"Error processing chunk ({chunk_x}, {chunk_y}) in worker: {e}")
+                    traceback.print_exc()
+                    with chunk_lock:
+                        generating_chunks.discard((chunk_x, chunk_y))
+                finally:
                     chunk_generation_queue.task_done()
-                    continue
-                    
-            # Generate the chunk
-            try:
-                generate_chunk(chunk_x, chunk_y, seed)
-                print(f"Worker generated chunk at ({chunk_x}, {chunk_y})")
-            except Exception as e:
-                print(f"Error generating chunk ({chunk_x}, {chunk_y}) in worker: {e}")
-            
-            # Mark task as done
-            chunk_generation_queue.task_done()
-            
-            # Brief pause between generations to avoid freezing the game
-            time.sleep(0.05)
-            
+            else:
+                chunk_generation_queue.task_done()
+
         except queue.Empty:
-            # Queue is empty, continue waiting
             time.sleep(0.1)
         except Exception as e:
-            print(f"Error in chunk generation worker: {e}")
-            chunk_generation_queue.task_done()  # Mark task as done to avoid stalling
+            print(f"Error in chunk worker loop: {e}")
+            traceback.print_exc()
+            time.sleep(0.5)
 
 def start_chunk_workers(num_workers, seed):
-    """Start worker threads for chunk generation."""
-    global chunk_worker_running
-    chunk_worker_running = True
-    
+    if chunk_worker_running.is_set():
+        print("Chunk workers already running.")
+        return []
+
+    chunk_worker_running.set()
     workers = []
-    for _ in range(num_workers):
-        worker = threading.Thread(target=generate_chunk_worker)
-        worker.daemon = True
+    for i in range(num_workers):
+        worker = threading.Thread(target=generate_chunk_worker, name=f"ChunkWorker-{i}", daemon=True)
         worker.start()
         workers.append(worker)
-    
+    print(f"Started {num_workers} chunk generation workers.")
     return workers
 
 def stop_chunk_workers(workers):
-    """Stop worker threads for chunk generation."""
-    global chunk_worker_running
-    chunk_worker_running = False
-    
-    # Wait for workers to finish
+    if not chunk_worker_running.is_set():
+        print("Chunk workers already stopped.")
+        return
+
+    print("Stopping chunk workers...")
+    chunk_worker_running.clear()
+
+    q_size = chunk_generation_queue.qsize()
+    if q_size > 0:
+        print(f"Waiting for {q_size} chunks in queue to be processed or workers to time out...")
+        chunk_generation_queue.join()
+
     for worker in workers:
+        worker.join(timeout=1.0)
         if worker.is_alive():
-            worker.join(0.1)
-
-def align_chunk_borders(chunk, chunk_x, chunk_y):
-    """Ensure the borders of the chunk align with adjacent chunks."""
-    # Vérifiez les chunks adjacents
-    for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-        neighbor_coords = (chunk_x + dx, chunk_y + dy)
-        if neighbor_coords in loaded_chunks:
-            neighbor_chunk = loaded_chunks[neighbor_coords]
-            
-            # Alignez les bordures gauche/droite
-            if dx == -1:  # Chunk gauche
-                chunk[:, 0] = neighbor_chunk[:, -1]
-            elif dx == 1:  # Chunk droit
-                chunk[:, -1] = neighbor_chunk[:, 0]
-            
-            # Alignez les bordures haut/bas
-            if dy == -1:  # Chunk au-dessus
-                chunk[0, :] = neighbor_chunk[-1, :]
-            elif dy == 1:  # Chunk en dessous
-                chunk[-1, :] = neighbor_chunk[0, :]
-    return chunk
-
-def validate_and_align_chunk(chunk, chunk_x, chunk_y):
-    """Validate the chunk and align its borders with adjacent chunks."""
-    # Vérifiez que tous les blocs générés sont valides
-    for y in range(config.CHUNK_SIZE):
-        for x in range(config.CHUNK_SIZE):
-            block_type = chunk[y, x]
-            if block_type not in config.BLOCKS:
-                print(f"Invalid block type {block_type} at ({x}, {y}) in chunk ({chunk_x}, {chunk_y}). Replacing with EMPTY.")
-                chunk[y, x] = config.EMPTY  # Remplacez les blocs non valides par EMPTY
-
-    # Alignez les bordures avec les chunks adjacents
-    for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-        neighbor_coords = (chunk_x + dx, chunk_y + dy)
-        if neighbor_coords in loaded_chunks:
-            neighbor_chunk = loaded_chunks[neighbor_coords]
-            
-            # Alignez les bordures gauche/droite
-            if dx == -1:  # Chunk gauche
-                chunk[:, 0] = neighbor_chunk[:, -1]
-            elif dx == 1:  # Chunk droit
-                chunk[:, -1] = neighbor_chunk[:, 0]
-            
-            # Alignez les bordures haut/bas
-            if dy == -1:  # Chunk au-dessus
-                chunk[0, :] = neighbor_chunk[-1, :]
-            elif dy == 1:  # Chunk en dessous
-                chunk[-1, :] = neighbor_chunk[0, :]
-    return chunk
-
-def generate_chunk(chunk_x, chunk_y, seed):
-    """Generate a new chunk at the given position."""
-    chunk_x = int(chunk_x)  # Ensure chunk_x is an integer
-    chunk_y = int(chunk_y)  # Ensure chunk_y is an integer
-    print(f"Generating chunk at ({chunk_x}, {chunk_y})")
-    
-    # Create an empty chunk as a numpy array
-    chunk = np.zeros((config.CHUNK_SIZE, config.CHUNK_SIZE), dtype=np.int32)
-    chunk.fill(config.EMPTY)
-    
-    try:
-        # Utiliser la génération GPU si disponible
-        if GPU_GENERATION:
-            print(f"Using GPU generation for chunk ({chunk_x}, {chunk_y})")
-            chunk = generate_chunk_gpu(chunk_x, chunk_y, seed)
-        else:
-            print(f"Using CPU generation for chunk ({chunk_x}, {chunk_y})")
-            chunk = gen_chunk_terrain(chunk, chunk_x, chunk_y, seed)
-    except ImportError:
-        print(f"Map generation module not found for ({chunk_x}, {chunk_y}). Using empty chunk.")
-    except Exception as e:
-        print(f"Error generating chunk terrain at ({chunk_x}, {chunk_y}): {e}")
-        # Even if there's an error, we'll still create an empty chunk
-    
-    # Validez et alignez le chunk
-    chunk = validate_and_align_chunk(chunk, chunk_x, chunk_y)
-
-    # Add the chunk to the loaded chunks with lock to prevent race conditions
-    with chunk_lock:
-        loaded_chunks[(chunk_x, chunk_y)] = chunk
-        modified_chunks.add((chunk_x, chunk_y))
-        print(f"Chunk ({chunk_x}, {chunk_y}) successfully added to loaded_chunks")
-
-    return chunk
+            print(f"Warning: Worker {worker.name} did not stop gracefully.")
+    print("Chunk workers stopped.")
 
 def ensure_chunks_around_point(x, y, radius):
-    """Ensure chunks are loaded around a point with optimized checks."""
-    chunk_x, chunk_y = get_chunk_coords(x, y)
-    for dy in range(-radius, radius + 1):
-        for dx in range(-radius, radius + 1):
-            cx = int(chunk_x + dx)
-            cy = int(chunk_y + dy)
-            if (cx, cy) not in loaded_chunks:
-                chunk_generation_queue.put((cx, cy, config.SEED))
+    center_chunk_x = int(x // (config.CHUNK_SIZE * config.PIXEL_SIZE))
+    center_chunk_y = int(y // (config.CHUNK_SIZE * config.PIXEL_SIZE))
 
-def unload_distant_chunks(world_x, world_y, unload_distance):
-    """Unload chunks that are too far from a given position."""
-    block_x = int(world_x // config.PIXEL_SIZE)
-    block_y = int(world_y // config.PIXEL_SIZE)
-    center_chunk_x, center_chunk_y = get_chunk_coords(block_x, block_y)
-    
-    # Calculate squared unload distance to avoid square root
-    squared_unload_distance = unload_distance * unload_distance * config.CHUNK_SIZE * config.CHUNK_SIZE
-    
-    # Find chunks to unload
+    chunks_to_queue = []
+    with chunk_lock:
+        loaded_coords = set(loaded_chunks.keys())
+        generating_coords = set(generating_chunks)
+
+        for dy in range(-radius, radius + 1):
+            for dx in range(-radius, radius + 1):
+                cx, cy = center_chunk_x + dx, center_chunk_y + dy
+                if (cx, cy) not in loaded_coords and (cx, cy) not in generating_coords:
+                    chunks_to_queue.append((cx, cy))
+
+    chunks_to_queue.sort(key=lambda coords: abs(coords[0] - center_chunk_x) + abs(coords[1] - center_chunk_y))
+
+    queued_count = 0
+    for cx, cy in chunks_to_queue:
+        chunk_generation_queue.put((cx, cy, config.SEED))
+        queued_count += 1
+
+def unload_distant_chunks(world_x, world_y, unload_distance_chunks):
+    center_chunk_x = int(world_x // (config.CHUNK_SIZE * config.PIXEL_SIZE))
+    center_chunk_y = int(world_y // (config.CHUNK_SIZE * config.PIXEL_SIZE))
+
     chunks_to_unload = []
-    for chunk_pos in loaded_chunks.keys():
-        chunk_x, chunk_y = chunk_pos
-        dx = (chunk_x - center_chunk_x) * config.CHUNK_SIZE
-        dy = (chunk_y - center_chunk_y) * config.CHUNK_SIZE
-        squared_distance = dx * dx + dy * dy
-        
-        if squared_distance > squared_unload_distance:
-            chunks_to_unload.append(chunk_pos)
-    
-    # Unload chunks
-    for chunk_pos in chunks_to_unload:
-        if chunk_pos in modified_chunks:
-            # TODO: Save modified chunks before unloading
-            pass
-        
-        # Remove from loaded chunks and caches
-        if chunk_pos in loaded_chunks:
-            del loaded_chunks[chunk_pos]
-        if chunk_pos in chunk_cache:
-            del chunk_cache[chunk_pos]
-        if chunk_pos in modified_chunks:
-            modified_chunks.remove(chunk_pos)
+    with chunk_lock:
+        current_chunk_keys = list(loaded_chunks.keys())
+        for chunk_x, chunk_y in current_chunk_keys:
+            dist_x = abs(chunk_x - center_chunk_x)
+            dist_y = abs(chunk_y - center_chunk_y)
+            if max(dist_x, dist_y) > unload_distance_chunks:
+                if chunk_x == 0 and chunk_y == 0:
+                    continue
+                chunks_to_unload.append((chunk_x, chunk_y))
 
-def get_active_chunks(player_x, player_y, screen_width, screen_height, view_multiplier, max_chunks):
-    """Get active chunks that should be rendered based on the player's position."""
-    block_x = int(player_x // config.PIXEL_SIZE)
-    block_y = int(player_y // config.PIXEL_SIZE)
-    center_chunk_x, center_chunk_y = get_chunk_coords(block_x, block_y)
-    
-    # Calculate the number of chunks visible on screen (with buffer)
-    chunks_x = int((screen_width * view_multiplier) // (config.CHUNK_SIZE * config.PIXEL_SIZE)) + 2
-    chunks_y = int((screen_height * view_multiplier) // (config.CHUNK_SIZE * config.PIXEL_SIZE)) + 2
-    
-    # Get chunks in the visible area
-    active_chunks = []
-    for dx in range(-chunks_x, chunks_x + 1):
-        for dy in range(-chunks_y, chunks_y + 1):
-            chunk_x = center_chunk_x + dx
-            chunk_y = center_chunk_y + dy
-            
-            # Add chunk if it's loaded
-            if (chunk_x, chunk_y) in loaded_chunks:
-                active_chunks.append((chunk_x, chunk_y))
-    
-    # Limit the number of active chunks if necessary
-    if len(active_chunks) > max_chunks:
-        # Sort chunks by distance to player
-        active_chunks.sort(key=lambda pos: ((pos[0] - center_chunk_x) ** 2 + (pos[1] - center_chunk_y) ** 2))
-        active_chunks = active_chunks[:max_chunks]
-    
-    return active_chunks
+    unloaded_count = 0
+    if chunks_to_unload:
+        with chunk_lock:
+            for chunk_pos in chunks_to_unload:
+                if chunk_pos in loaded_chunks:
+                    del loaded_chunks[chunk_pos]
+                    modified_chunks.discard(chunk_pos)
+                    unloaded_count += 1
 
-def save_world_to_file(filename, storage_system=None):
-    """Save the world state to a file."""
-    global loaded_chunks, modified_chunks
-    
+def get_active_chunks(world_x, world_y, screen_width, screen_height, view_multiplier, max_chunks):
+    center_chunk_x = int(world_x // (config.CHUNK_SIZE * config.PIXEL_SIZE))
+    center_chunk_y = int(world_y // (config.CHUNK_SIZE * config.PIXEL_SIZE))
+
+    view_dist_pixels_x = (screen_width * view_multiplier) / 2
+    view_dist_pixels_y = (screen_height * view_multiplier) / 2
+    chunk_span_x = int(view_dist_pixels_x // (config.CHUNK_SIZE * config.PIXEL_SIZE)) + 2
+    chunk_span_y = int(view_dist_pixels_y // (config.CHUNK_SIZE * config.PIXEL_SIZE)) + 2
+
+    active_chunks_list = []
+    with chunk_lock:
+        for dx in range(-chunk_span_x, chunk_span_x + 1):
+            for dy in range(-chunk_span_y, chunk_span_y + 1):
+                chunk_coords = (center_chunk_x + dx, center_chunk_y + dy)
+                if chunk_coords in loaded_chunks:
+                    active_chunks_list.append(chunk_coords)
+
+    if len(active_chunks_list) > max_chunks:
+        active_chunks_list.sort(key=lambda pos: max(abs(pos[0] - center_chunk_x), abs(pos[1] - center_chunk_y)))
+        active_chunks_list = active_chunks_list[:max_chunks]
+
+    return active_chunks_list
+
+def save_world_to_file(filename, storage_system=None, player_pos=(0,0)):
+    print(f"Saving world to {filename}...")
+    saved_count = 0
+    world_data = {}
+
+    chunk_data_to_save = {}
+    with chunk_lock:
+        chunks_to_process = list(modified_chunks)
+
+        print(f"Found {len(chunks_to_process)} modified chunks to save.")
+
+        for chunk_pos in chunks_to_process:
+            if chunk_pos in loaded_chunks:
+                chunk = loaded_chunks[chunk_pos]
+                chunk_data_to_save[f"{chunk_pos[0]},{chunk_pos[1]}"] = chunk.tolist()
+                saved_count += 1
+
+    world_data = {
+        "seed": config.SEED,
+        "player_x": player_pos[0],
+        "player_y": player_pos[1],
+        "chunks": chunk_data_to_save,
+    }
+
     try:
-        # Determine the directory to save the file in
-        data_dir = os.path.dirname(filename)
-        if not data_dir:
-            data_dir = "."  # Use current directory if filename only has the file name
-        
-        # Create the directory if it doesn't exist
-        os.makedirs(data_dir, exist_ok=True)
-        
-        # Prepare chunk data for saving
-        chunk_data = {}
-        for (chunk_x, chunk_y), chunk in loaded_chunks.items():
-            # Convert NumPy array to list for JSON serialization
-            chunk_data[f"{chunk_x},{chunk_y}"] = chunk.tolist()
-        
-        # Prepare world data for saving
-        world_data = {
-            "chunks": chunk_data,
-            "player_x": 0,  # Example player data
-            "player_y": 0,
-            "seed": config.SEED
-        }
-        
-        # Save the world data to the file
+        dir_name = os.path.dirname(filename)
+        if dir_name:
+            os.makedirs(dir_name, exist_ok=True)
+            print(f"Ensured directory exists: {dir_name}")
+        else:
+            print("Saving to current directory, no need to create path.")
+
         with open(filename, "w") as f:
-            json.dump(world_data, f)
-        
-        print(f"World saved to {filename}")
+            json.dump(world_data, f, indent=2)
+
+        print(f"World saved successfully ({saved_count} chunks) to {filename}")
+        with chunk_lock:
+            modified_chunks.clear()
+
     except Exception as e:
         print(f"Error saving world: {e}")
+        traceback.print_exc()
 
 def load_world_from_file(filename, storage_system=None):
-    """Load the world from a file."""
     print(f"Loading world from {filename}...")
+    if not os.path.exists(filename):
+        print(f"Save file {filename} not found. Cannot load.")
+        return False, (0, 0)
+
     try:
         with open(filename, 'r') as f:
             data = json.load(f)
-        
-        # Load the seed
-        seed = data.get("seed", 1)
-        print(f"Loaded seed: {seed}")
-        
-        # Load chunk data with proper locking
+
+        loaded_seed = data.get("seed", config.SEED)
+        config.SEED = loaded_seed
+        print(f"Loaded and set world seed: {config.SEED}")
+
+        player_x = data.get("player_x", 0)
+        player_y = data.get("player_y", 0)
+        player_pos = (player_x, player_y)
+        print(f"Loaded player position: {player_pos}")
+
+        loaded_count = 0
         with chunk_lock:
-            # Clear existing chunks to prevent conflicts
             loaded_chunks.clear()
             modified_chunks.clear()
-            
-            # Load chunks from file
+            generating_chunks.clear()
+
             chunk_data = data.get('chunks', {})
-            print(f"Found {len(chunk_data)} chunks in save file")
-            
-            for coord_str, chunk_array in chunk_data.items():
+            print(f"Found {len(chunk_data)} chunks in save file.")
+
+            for coord_str, chunk_list in chunk_data.items():
                 try:
-                    # Parse chunk coordinates
-                    x_str, y_str = coord_str.strip('()').split(',')
+                    x_str, y_str = coord_str.split(',')
                     chunk_x, chunk_y = int(x_str), int(y_str)
-                    
-                    # Convert chunk data to numpy array
-                    chunk = np.array(chunk_array, dtype=np.int32)
-                    
-                    # Ensure correct chunk dimensions
-                    if chunk.shape != (config.CHUNK_SIZE, config.CHUNK_SIZE):
-                        print(f"Warning: Chunk at {chunk_x},{chunk_y} has wrong dimensions {chunk.shape}, resizing")
-                        # Resize chunk to correct dimensions if needed
-                        new_chunk = np.zeros((config.CHUNK_SIZE, config.CHUNK_SIZE), dtype=np.int32)
-                        min_y = min(chunk.shape[0], config.CHUNK_SIZE)
-                        min_x = min(chunk.shape[1], config.CHUNK_SIZE)
-                        new_chunk[:min_y, :min_x] = chunk[:min_y, :min_x]
-                        chunk = new_chunk
-                    
-                    # Store the chunk
-                    loaded_chunks[(chunk_x, chunk_y)] = chunk
-                    print(f"Loaded chunk at ({chunk_x}, {chunk_y})")
-                    
+
+                    chunk_array = np.array(chunk_list, dtype=np.int32)
+
+                    if chunk_array.shape != (config.CHUNK_SIZE, config.CHUNK_SIZE):
+                        print(f"Warning: Chunk {coord_str} has incorrect shape {chunk_array.shape}. Skipping.")
+                        continue
+
+                    loaded_chunks[(chunk_x, chunk_y)] = chunk_array
+                    loaded_count += 1
+
                 except Exception as e:
-                    print(f"Error loading chunk {coord_str}: {e}")
+                    print(f"Error loading chunk data for '{coord_str}': {e}")
                     continue
-        
-        # Load additional data (storage, machines, etc.)
-        if 'storage' in data and storage_system:
-            storage_system.load_from_save_data(data['storage'])
-        
-        print(f"World loaded successfully with {len(loaded_chunks)} chunks")
-        return True
-    
+
+        print(f"World loaded successfully with {loaded_count} chunks.")
+        ensure_origin_chunk_exists()
+        return True, player_pos
+
+    except FileNotFoundError:
+        print(f"Save file {filename} not found.")
+        return False, (0, 0)
+    except json.JSONDecodeError:
+        print(f"Error decoding JSON from save file {filename}.")
+        return False, (0, 0)
     except Exception as e:
-        print(f"Error loading world: {e}")
+        print(f"An unexpected error occurred loading world: {e}")
         traceback.print_exc()
-        return False
+        return False, (0, 0)
 
 def ensure_origin_chunk_exists():
-    """Ensure the origin chunk (0,0) exists."""
     with chunk_lock:
         if (0, 0) not in loaded_chunks:
-            print("Origin chunk missing, generating...")
-            if origin_chunk_backup is not None:
-                print("Restoring origin chunk from backup")
-                loaded_chunks[(0, 0)] = origin_chunk_backup.copy()
+            print("Origin chunk (0,0) missing, generating...")
+            origin_data = generate_chunk_data(0, 0, config.SEED)
+            if origin_data is not None:
+                loaded_chunks[(0, 0)] = origin_data
                 modified_chunks.add((0, 0))
+                print("Origin chunk (0,0) generated and added.")
             else:
-                print("Creating new origin chunk")
-                # Create a basic chunk with empty top half and dirt/stone bottom half
-                chunk = np.zeros((config.CHUNK_SIZE, config.CHUNK_SIZE), dtype=np.int32)
-                # Top half is air
-                chunk[:config.CHUNK_SIZE//2, :] = config.EMPTY
-                # Bottom half is dirt/stone
-                chunk[config.CHUNK_SIZE//2:, :] = config.DIRT
-                loaded_chunks[(0, 0)] = chunk
-                modified_chunks.add((0, 0))
-            print("Origin chunk is now present")
-        return loaded_chunks[(0, 0)]
+                print("Error: Failed to generate data for origin chunk (0,0).")
+                loaded_chunks[(0, 0)] = np.full((config.CHUNK_SIZE, config.CHUNK_SIZE), config.EMPTY, dtype=np.int32)
 
-# Make sure the function is named so it can be imported
 __all__ = [
     'get_chunk_coords', 'get_block_at', 'set_block_at', 'mark_chunk_modified',
-    'generate_chunk', 'start_chunk_workers', 'stop_chunk_workers',
-    'ensure_chunks_around_point_optimized', 'unload_distant_chunks', 'get_active_chunks',
-    'save_world_to_file', 'load_world_from_file', 'chunk_lock',
-    'ensure_origin_chunk_exists', 'chunk_generation_queue', 'loaded_chunks'  # Add these exports
+    'generate_chunk_data',
+    'start_chunk_workers', 'stop_chunk_workers',
+    'ensure_chunks_around_point', 'unload_distant_chunks', 'get_active_chunks',
+    'save_world_to_file', 'load_world_from_file', 'chunk_lock', 'generating_chunks',
+    'ensure_origin_chunk_exists', 'chunk_generation_queue', 'loaded_chunks', 'modified_chunks'
 ]
