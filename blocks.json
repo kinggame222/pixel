@@ -329,5 +329,21 @@
     },
     "shader": null,
     "texture": "textures/leaves.png"
+  },
+  {
+    "id": 24,
+    "name": "auto_miner",
+    "color": [200, 100, 50],
+    "solid": true,
+    "gravity": false,
+    "hardness": 5.0,
+    "density": 3000,
+    "breakable": true,
+    "is_machine": true,
+    "mining_radius": 3,
+    "mining_cooldown": 2.0,
+    "drops": {
+      "24": 1.0
+    }
   }
 ]

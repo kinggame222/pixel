@@ -63,6 +63,8 @@ class ExtractorSystem:
                         if item_extracted:
                             # Mise à jour du temps de dernière extraction
                             extractor["last_extraction"] = current_time
+                            # Appeler conveyor_system.add_item
+                            self.conveyor_system.add_item(*conveyor_pos, item_extracted)
     
     def _find_adjacent_storage(self, x, y):
         """Trouve un stockage adjacent à l'extracteur."""
@@ -138,4 +140,37 @@ class ExtractorSystem:
             self.storage_system.add_item_to_storage(*storage_pos, item_id, 1)
             return False
             
-        return True
+        return item_id
+
+    def get_save_data(self):
+        """Returns extractor data in a JSON-serializable format."""
+        # Convert tuple keys (x, y) to string keys "x,y"
+        serializable_extractors = {}
+        for (x, y), data in self.extractors.items():
+            # Make a copy to avoid modifying the original dict if needed later
+            save_data = data.copy()
+            # Ensure target_inventory is serializable (if it's complex)
+            # For now, assuming it's None or simple enough
+            serializable_extractors[f"{x},{y}"] = save_data
+        return serializable_extractors
+
+    def load_save_data(self, data):
+        """Loads extractor data from a dictionary."""
+        self.extractors.clear()
+        print("[ExtractorSystem] Loading save data...")
+        loaded_count = 0
+        for key, e_data in data.items():
+            try:
+                x_str, y_str = key.split(',')
+                origin = (int(x_str), int(y_str))
+                # Ensure cooldown is loaded correctly as float
+                e_data["cooldown"] = float(e_data.get("cooldown", 0.0))
+                # Ensure target_inventory is loaded correctly (if needed)
+                # e_data["target_inventory"] = e_data.get("target_inventory") # Example
+                self.extractors[origin] = e_data
+                loaded_count += 1
+                # Optional: Re-register with multi-block system?
+                # self.multi_block_system.register_multi_block(origin[0], origin[1], config.ITEM_EXTRACTOR)
+            except Exception as e:
+                print(f"Error loading extractor data for key {key}: {e}")
+        print(f"[ExtractorSystem] Loaded {loaded_count} extractors.")

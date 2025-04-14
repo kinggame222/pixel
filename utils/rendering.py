@@ -3,6 +3,10 @@ from core import config
 from world import chunks  # Import chunks to access the cache and modified chunks
 import json
 import os
+import random
+
+# Placeholder color for missing textures or invalid blocks
+MISSING_TEXTURE_COLOR = (255, 0, 255)  # Bright Magenta
 
 def load_block_data():
     """Load block data from blocks.json."""
@@ -47,39 +51,62 @@ def render_block(surface, block_type, x, y, block_surfaces):
     block_surface = block_surfaces[block_type]
     surface.blit(block_surface, (x, y))
 
-def render_chunk(chunk, chunk_x, chunk_y, camera_x, camera_y, 
-                mining_animation, block_surfaces, machine_system, multi_block_system=None):
-    """Renders a chunk to a surface."""
-    # Create a new surface for rendering
-    surface = pygame.Surface((config.CHUNK_SIZE * config.PIXEL_SIZE, config.CHUNK_SIZE * config.PIXEL_SIZE), pygame.SRCALPHA)
-    surface.fill((0, 0, 0, 0))  # Fully transparent background
+def render_chunk(chunk_data, chunk_x, chunk_y, camera_x, camera_y, mining_animation, block_surfaces, machine_system, multi_block_system=None):
+    """Render a single chunk to a surface."""
+    chunk_surface = pygame.Surface((config.CHUNK_SIZE * config.PIXEL_SIZE, 
+                                    config.CHUNK_SIZE * config.PIXEL_SIZE), pygame.SRCALPHA)
     
     for y in range(config.CHUNK_SIZE):
         for x in range(config.CHUNK_SIZE):
-            block_type = chunk[y, x]
-            if block_type == config.ORE_PROCESSOR:
-                # Vérifiez si c'est l'origine de l'ore_processor
-                origin_x, origin_y = chunk_x * config.CHUNK_SIZE + x, chunk_y * config.CHUNK_SIZE + y
-                machine_origin = machine_system.get_machine_origin(origin_x, origin_y)
-                if machine_origin == (origin_x, origin_y):  # Vérifiez si c'est l'origine
-                    width, height = config.BLOCKS[block_type].get("size", (1, 1))
+            block_type = chunk_data[y, x]
+            
+            # Skip rendering empty blocks
+            if block_type == config.EMPTY:
+                continue
+
+            # Calculate block position relative to the chunk surface
+            block_rect = pygame.Rect(x * config.PIXEL_SIZE, y * config.PIXEL_SIZE, 
+                                    config.PIXEL_SIZE, config.PIXEL_SIZE)
+
+            # Check if block_type and its texture exist
+            block_info = config.BLOCKS.get(block_type)
+            texture_path = block_info.get("texture") if block_info else None
+
+            if texture_path and block_type in block_surfaces:
+                # Use pre-rendered surface if available
+                block_surface = block_surfaces[block_type]
+                chunk_surface.blit(block_surface, block_rect.topleft)
+            elif block_info and "color" in block_info:
+                # Fallback to color if texture is missing but color exists
+                pygame.draw.rect(chunk_surface, block_info["color"], block_rect)
+            else:
+                # Fallback to magenta if block info or color is missing
+                pygame.draw.rect(chunk_surface, MISSING_TEXTURE_COLOR, block_rect)
+
+            # --- Render Mining Animation ---
+            world_x = chunk_x * config.CHUNK_SIZE + x
+            world_y = chunk_y * config.CHUNK_SIZE + y
+            mining_key = (world_y, world_x)  # Use world coords for mining progress key
+
+            if mining_key in mining_animation:
+                progress = mining_animation[mining_key]
+                if progress > 0:
+                    overlay_alpha = int(150 * (1 - progress))  # Fade out as progress increases
+                    overlay_color = (0, 0, 0, overlay_alpha)
+                    overlay_surface = pygame.Surface((config.PIXEL_SIZE, config.PIXEL_SIZE), pygame.SRCALPHA)
+                    overlay_surface.fill(overlay_color)
                     
-                    # Chargez et redimensionnez la texture pour couvrir tout le multi-bloc
-                    texture = pygame.image.load(config.BLOCKS[block_type]["texture"]).convert_alpha()
-                    texture = pygame.transform.scale(texture, (width * config.PIXEL_SIZE, height * config.PIXEL_SIZE))
-                    
-                    # Blit la texture redimensionnée sur la surface principale
-                    screen_x = (origin_x - chunk_x * config.CHUNK_SIZE) * config.PIXEL_SIZE
-                    screen_y = (origin_y - chunk_y * config.CHUNK_SIZE) * config.PIXEL_SIZE
-                    surface.blit(texture, (screen_x, screen_y))
-            elif block_type != config.EMPTY:
-                block_x = x * config.PIXEL_SIZE
-                block_y = y * config.PIXEL_SIZE
-                render_block(surface, block_type, block_x, block_y, block_surfaces)
-                # Debug print (Commented out for performance)
-                # print(f"[DEBUG render_chunk] Rendering block type {block_type} at chunk ({chunk_x},{chunk_y}) position ({x},{y})")
-    
-    return surface
+                    # Draw cracks (example)
+                    crack_color = (50, 50, 50, 200)
+                    num_cracks = int(progress * 5)  # More cracks as progress increases
+                    for _ in range(num_cracks):
+                        start_pos = (random.randint(0, config.PIXEL_SIZE), random.randint(0, config.PIXEL_SIZE))
+                        end_pos = (random.randint(0, config.PIXEL_SIZE), random.randint(0, config.PIXEL_SIZE))
+                        pygame.draw.line(overlay_surface, crack_color, start_pos, end_pos, 1)
+
+                    chunk_surface.blit(overlay_surface, block_rect.topleft)
+
+    return chunk_surface
 
 def draw_performance_stats(screen, dt, active_chunk_count, cache_size, fps_font):
     """Draw performance statistics on screen."""

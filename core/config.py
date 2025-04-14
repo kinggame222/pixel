@@ -72,6 +72,7 @@ if "ORE_PROCESSOR" not in globals():
 # Add Snow Block ID
 SNOW_BLOCK = 20
 
+
 # --- Colors ---
 COLOR_FPS = (255, 255, 0)
 COLOR_PLAYER = (0, 0, 255)

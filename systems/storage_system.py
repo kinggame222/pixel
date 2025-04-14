@@ -271,3 +271,35 @@ class StorageSystem:
             except Exception as e:
                 print(f"Error loading storage data for key '{key}': {e}")
         print(f"Finished loading data for {len(self.storages)} storage units.")
+
+    def get_save_data(self):
+        """Returns storage data in a JSON-serializable format."""
+        serializable_storages = {}
+        for (x, y), data in self.storages.items():
+            # Ensure item IDs in the inner dict are strings for JSON compatibility
+            string_key_items = {str(item_id): count for item_id, count in data["items"].items()}
+            serializable_storages[f"{x},{y}"] = {
+                "items": string_key_items,
+                "capacity": data["capacity"]
+            }
+        return serializable_storages
+
+    def load_save_data(self, data):
+        """Loads storage data from a dictionary."""
+        self.storages.clear()
+        print("[StorageSystem] Loading save data...")
+        loaded_count = 0
+        for key, storage_data in data.items():
+            try:
+                x_str, y_str = key.split(',')
+                origin = (int(x_str), int(y_str))
+                # Convert string item IDs back to integers
+                int_key_items = {int(item_id_str): count for item_id_str, count in storage_data.get("items", {}).items()}
+                self.storages[origin] = {
+                    "items": int_key_items,
+                    "capacity": storage_data.get("capacity", 200)  # Default capacity if not provided
+                }
+                loaded_count += 1
+            except Exception as e:
+                print(f"Error loading storage data for key {key}: {e}")
+        print(f"[StorageSystem] Loaded {loaded_count} storage containers.")
