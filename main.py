@@ -50,14 +50,18 @@ DEBUG_MODE = True          # Enable debug mode
 SAVE_FILE = "world.json"   # Path to the save file
 SEED = config.SEED         # World generation seed
 ENABLE_CHUNK_CACHE = True  # Enable chunk caching for performance
-MAX_ACTIVE_CHUNKS = 200     # Reduce maximum active chunks to render
+MAX_ACTIVE_CHUNKS = 400     # Reduce maximum active chunks to render
 PERFORMANCE_MONITOR = True # Show performance stats
 VIEW_DISTANCE_MULTIPLIER = 1.5  # Reduce view distance multiplier
-CHUNK_LOAD_RADIUS = 5      # Smaller initial radius for faster generation
-CHUNK_UNLOAD_DISTANCE = 10  # Keep fewer chunks loaded
-CHUNK_GEN_THREAD_COUNT = 4 # Augmentez à 4 threads pour une génération plus rapide
+CHUNK_LOAD_RADIUS = 4      # Increased radius to reduce frequent loading/unloading
+CHUNK_UNLOAD_DISTANCE = 6  # Increased distance to add a buffer
+CHUNK_GEN_THREAD_COUNT = 20 # Augmentez à 4 threads pour une génération plus rapide
 ENABLE_INFINITE_WORLD = True  # Enable infinite world generation
 USE_GPU_GENERATION = True  # Use GPU for generation if available
+
+# Add a cooldown for unloading chunks
+last_unload_time = 0
+UNLOAD_COOLDOWN = 2  # Minimum time (in seconds) between unload operations
 
 def find_spawn_position():
     """Finds a safe spawn position for the player above the ground."""
@@ -900,12 +904,13 @@ if __name__ == '__main__':
                 # Manage chunks for infinite world
                 if ENABLE_INFINITE_WORLD:
                     # Ensure chunks are loaded in waves, not all at once
-                    ensure_chunks_around_player(player.x, player.y, CHUNK_LOAD_RADIUS)
+                    ensure_chunks_around_point_optimized(player.x, player.y, CHUNK_LOAD_RADIUS)
                     
-                    # Unload distant chunks less frequently to prevent loading/unloading cycles
-                    if int(current_time) % 5 == 0 and int(current_time) != int(last_time):  # Every 5 seconds
+                    # Unload distant chunks with a cooldown
+                    if time.time() - last_unload_time > UNLOAD_COOLDOWN:
                         print(f"Checking chunks to unload. {len(loaded_chunks)} chunks currently loaded.")
                         unload_distant_chunks(player.x, player.y, CHUNK_UNLOAD_DISTANCE)
+                        last_unload_time = time.time()
                 
                 # Update machines
                 machine_system.update()

@@ -111,12 +111,11 @@ def generate_chunk_worker():
             # Mark task as done
             chunk_generation_queue.task_done()
             
-            # Brief pause between generations to avoid freezing the game
-            time.sleep(0.05)
+        
             
         except queue.Empty:
             # Queue is empty, continue waiting
-            time.sleep(0.1)
+            time.sleep(0.5)
         except Exception as e:
             print(f"Error in chunk generation worker: {e}")
             chunk_generation_queue.task_done()  # Mark task as done to avoid stalling
