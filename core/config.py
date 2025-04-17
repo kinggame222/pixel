@@ -4,17 +4,19 @@ import time
 
 # --- Game Configuration ---
 
-PIXEL_SIZE = 16  # Augmenter la taille des pixels pour un effet de zoom
+PIXEL_SIZE = 4  # Augmenter la taille des pixels pour un effet de zoom
 
 SEED = int(time.time())  # Seed for world generation (non-deterministic)
-PLAYER_WIDTH = 4 * PIXEL_SIZE
-PLAYER_HEIGHT = 5 * PIXEL_SIZE
+PLAYER_WIDTH = 2 * PIXEL_SIZE
+PLAYER_HEIGHT = 3 * PIXEL_SIZE
 PLAYER_SPEED = 500
 
 ANIM_DURATION = 100
-
+ 
 # --- Chunk Management ---
-CHUNK_SIZE = 16  # Size of each chunk (in blocks)
+CHUNK_SIZE = 16 # Taille actuelle d'un chunk (5x5 blocs)
+# Pour augmenter le terrain par chunk, changez cette valeur, par exemple:
+# CHUNK_SIZE = 16  # Un chunk de 16x16 blocs
 
 # --- Graphics Settings ---
 WINDOW_TITLE = "Pixel Mining - Modular"

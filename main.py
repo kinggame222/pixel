@@ -53,14 +53,139 @@ DEBUG_MODE = True          # Enable debug mode
 SAVE_FILE = "world.json"   # Path to the save file
 SEED = config.SEED         # World generation seed
 ENABLE_CHUNK_CACHE = True  # Enable chunk caching for performance
-MAX_ACTIVE_CHUNKS = 50     # Reduce maximum active chunks to render
+MAX_ACTIVE_CHUNKS = 200     # Reduce maximum active chunks to render
 PERFORMANCE_MONITOR = True # Show performance stats
 VIEW_DISTANCE_MULTIPLIER = 1.5  # Reduce view distance multiplier
 CHUNK_LOAD_RADIUS = 4      # Revert to a reasonable value (e.g., 6 or 7)
-CHUNK_UNLOAD_DISTANCE = 4 # Revert to a reasonable value (e.g., 10 or 12)
+CHUNK_UNLOAD_DISTANCE = 8 # Keep chunks loaded a bit longer than the load radius
 CHUNK_GEN_THREAD_COUNT = 2 # Augmentez à 4 threads pour une génération plus rapide
 ENABLE_INFINITE_WORLD = True  # Enable infinite world generation
 USE_GPU_GENERATION = True  # Use GPU for generation if available
+
+# --- Correction pour éviter la répétition du pattern ---
+# Pour un terrain style Blockhead/Terraria, il faut :
+# - Un SEED global unique (déjà fait)
+# - Génération du terrain basée sur la Perlin noise 1D/2D sur les coordonnées mondiales (world_x, world_y)
+# - PAS de seed unique par chunk, mais une variation suffisante dans la fonction de génération (voir map_generation.py)
+def get_chunk_seed(global_seed, chunk_x, chunk_y):
+    # Terrain continu, style Terraria/Blockhead : seed global unique
+    return global_seed
+
+# --- Ajout : Conseils pour un terrain "Blockhead/Terraria" ---
+# Pour obtenir un vrai style Blockhead/Terraria :
+# 1. Dans world/map_generation.py, dans generate_chunk :
+#    - Utilisez la Perlin noise 1D pour la hauteur du sol (surface), sur world_x.
+#    - Ajoutez des plateaux, falaises, variations de hauteur, et des grottes (Perlin 2D sur world_x, world_y).
+#    - Ajoutez des couches (herbe, terre, pierre, minerais) selon la profondeur.
+#    - Ajoutez des arbres, lacs, biomes, etc.
+# 2. Ne touchez pas au seed par chunk ici, gardez juste le seed global.
+# 3. Inspirez-vous de la génération de terrain de Terraria : beaucoup de relief, des grottes, des surprises.
+# 4. Pour de vrais biomes :
+#    - Modifiez world/biomes.py pour ajouter plus de biomes variés (marais, jungle, savane, volcan, océan, etc).
+#    - Dans get_biome(x, y, seed), utilisez la Perlin noise ou une autre noise pour choisir le biome selon la position (et pas juste x % ...).
+#    - Chaque biome doit avoir ses propres paramètres : surface_block, base_height, height_variation, arbres, etc.
+#    - Dans map_generation.py, appliquez les propriétés du biome courant pour chaque chunk/colonne.
+#    - Ajoutez des transitions douces entre les biomes (par interpolation ou blending).
+
+# --- Ajout : Biomes avancés pour un terrain "Blockhead/Terraria" ---
+# Nécessite : world/biomes.py et world/map_generation.py adaptés
+
+# Exemple d'intégration automatique de biomes variés avec transitions douces
+# (Le code principal n'a pas besoin de changer, mais voici comment appeler la génération avancée)
+
+# Dans world/map_generation.py, assurez-vous d'utiliser la fonction get_biome avancée :
+# from world.biomes import get_biome
+
+# Dans generate_chunk, pour chaque colonne x du chunk :
+#   world_x = chunk_x * config.CHUNK_SIZE + x
+#   biome = get_biome(world_x, 0, seed)  # Utilise Perlin/simplex pour le choix du biome
+#   Utilisez biome.surface_block, biome.base_height, biome.height_variation, etc.
+
+# Pour la transition douce entre biomes, faites une interpolation linéaire entre les paramètres
+# de biome sur plusieurs colonnes (par exemple, sur 10-20 blocs).
+
+# Le code principal n'a pas besoin d'être modifié pour supporter les biomes avancés,
+# il suffit de s'assurer que map_generation.py et biomes.py utilisent la logique ci-dessus.
+
+# --- Priority Additions/Improvements ---
+
+# 1. Visual and Sound Feedback
+def play_sound_effect(effect_name):
+    """Play a sound effect."""
+    # Placeholder for sound effect logic
+    print(f"Playing sound effect: {effect_name}")
+
+def show_visual_effect(effect_name, position):
+    """Show a visual effect."""
+    # Placeholder for visual effect logic
+    print(f"Showing visual effect: {effect_name} at {position}")
+
+# 2. Error Messages and Notifications
+def display_notification(message, duration=2):
+    """Display a notification on the screen."""
+    # Placeholder for notification logic
+    print(f"Notification: {message}")
+
+# 3. Contextual Help/Tutorial
+def display_help_overlay():
+    """Display help overlay with controls and tips."""
+    # Placeholder for help overlay logic
+    print("Displaying help overlay")
+
+# 4. Interface Management
+def close_all_interfaces():
+    """Close all active interfaces."""
+    global active_storage
+    if machine_system.get_active_machine() is not None:
+        machine_system.close_machine_ui()
+    if crafting_system.get_active_table() is not None:
+        crafting_system.close_table_ui()
+    active_storage = None
+    print("All interfaces closed")
+
+# 5. Inventory Improvements
+def quick_move_item(source, destination):
+    """Move item quickly between inventory and storage."""
+    # Placeholder for quick move logic
+    print(f"Quickly moving item from {source} to {destination}")
+
+# 6. Undo Last Placement
+last_placement = None
+
+def undo_last_placement():
+    """Undo the last block placement."""
+    global last_placement
+    if last_placement:
+        block_x, block_y, block_type = last_placement
+        set_block_at(block_x, block_y, config.EMPTY)
+        last_placement = None
+        print(f"Undid placement of block type {block_type} at ({block_x}, {block_y})")
+    else:
+        print("No placement to undo")
+
+# 7. Machine/Tool Durability
+def display_durability(machine_or_tool):
+    """Display durability of a machine or tool."""
+    # Placeholder for durability display logic
+    print(f"Displaying durability for {machine_or_tool}")
+
+# 8. Mini-Map
+def render_mini_map():
+    """Render a mini-map of the explored area."""
+    # Placeholder for mini-map rendering logic
+    print("Rendering mini-map")
+
+# 9. Auto-Save
+def auto_save():
+    """Automatically save the game at regular intervals."""
+    save_world_to_file(SAVE_FILE, storage_system, (player.x, player.y), conveyor_system, extractor_system, multi_block_system, auto_miner_system)
+    print("Game auto-saved")
+
+# 10. Multi-Language Support
+def translate_text(text, language="en"):
+    """Translate text to the specified language."""
+    # Placeholder for translation logic
+    return text
 
 def find_spawn_position():
     """Finds a safe spawn position for the player above the ground."""
@@ -330,6 +455,7 @@ conveyor_placement_preview = []  # Liste des positions de prévisualisation
 random.seed(SEED)
 np.random.seed(SEED)
 
+
 # Start chunk generation worker threads
 chunk_workers = start_chunk_workers(CHUNK_GEN_THREAD_COUNT, SEED)
 
@@ -380,6 +506,11 @@ with chunk_lock:
         print("CRITICAL WARNING: Origin chunk (0,0) is NOT loaded after initialization!")
     else:
         print("Origin chunk (0,0) is loaded.")
+        # Debug: Print empty (cave) block density in the origin chunk to assess cave network generation
+        origin_chunk = loaded_chunks[(0,0)]
+        empty_count = np.count_nonzero(origin_chunk == config.EMPTY)
+        total_blocks = origin_chunk.size
+        print(f"Origin chunk cave density: {empty_count}/{total_blocks} empty blocks")
 
 # Get initial player position from loaded save or new world spawn
 player_x, player_y = player_start_pos
@@ -579,12 +710,7 @@ if __name__ == '__main__':
                             inventory.add_item(config.AUTO_MINER)
                             print("Auto Miner added to inventory!")
                         elif event.key == pygame.K_ESCAPE:  # Close active UIs when ESC is pressed
-                            MainMenu(screen_width, screen_height).draw(screen)
-                            if machine_system.get_active_machine() is not None:
-                                machine_system.close_machine_ui()
-                            if crafting_system.get_active_table() is not None:
-                                crafting_system.close_table_ui()
-                            active_storage = None
+                            close_all_interfaces()
                         elif event.key == pygame.K_z:  # Touche Z pour activer/désactiver le mode de placement rapide
                             conveyor_placement_active = not conveyor_placement_active
                             conveyor_placement_preview = []
@@ -597,6 +723,8 @@ if __name__ == '__main__':
                             conveyor_placement_direction = (conveyor_placement_direction + 1) % 4
                             directions = ["Droite", "Bas", "Gauche", "Haut"]
                             print(f"Direction de placement: {directions[conveyor_placement_direction]}")
+                        elif event.key == pygame.K_u:  # Undo last placement
+                            undo_last_placement()
                     
                     elif event.type == pygame.MOUSEBUTTONDOWN:
                         mouse_x, mouse_y = pygame.mouse.get_pos()
@@ -614,21 +742,17 @@ if __name__ == '__main__':
 
                             # Check if clicking on a machine or crafting table
                             if block_at_click == config.ORE_PROCESSOR or machine_system.is_machine_position(block_x, block_y):
-                                # ... (rest of machine UI logic uses block_x, block_y) ...
-                                pass
+                                # Open machine UI
+                                if machine_system.open_machine_ui(block_x, block_y):
+                                    print(f"Machine UI opened at ({block_x}, {block_y})")
                             elif block_at_click == config.CRAFTING_TABLE or crafting_system.is_table_position(block_x, block_y):
-                                pass
-                                # ... (rest of crafting UI logic uses block_x, block_y) ...
-
-                            # Add check for storage chests
+                                # Open crafting table UI
+                                if crafting_system.open_table_ui(block_x, block_y):
+                                    print(f"Crafting table UI opened at ({block_x}, {block_y})")
                             elif block_at_click == config.STORAGE_CHEST or storage_system.is_storage_position(block_x, block_y):
-                                # ... (rest of storage UI logic uses block_x, block_y) ...
-                                pass
-                            # --- UI Click Handling (uses screen coords: mouse_x, mouse_y) ---
-                            # ... (storage UI click) ...
-                            # ... (machine UI click) ...
-                            # ... (crafting UI click) ...
-                            # ... (inventory drag start) ...
+                                # Open storage UI
+                                active_storage = (block_x, block_y)
+                                print(f"Storage UI opened at ({block_x}, {block_y})")
 
                         elif event.button == 3:  # Right button (Placement)
                             # Use block_x, block_y (world block coords) for placement checks and calls
@@ -656,6 +780,7 @@ if __name__ == '__main__':
                                                             # Mark chunk modified (uses chunk coords, derived from block coords)
                                                             # mark_chunk_modified is called within set_block_at
                                                             placed_count += 1
+                                                            last_placement = (place_block_x, place_block_y, block_type_to_place)  # Track last placement
                                                         else:
                                                              print(f"Placement failed: set_block_at returned false at {place_block_x},{place_block_y}")
                                                              multi_block_system.unregister_multi_block(place_block_x, place_block_y) # Undo registration
@@ -700,6 +825,7 @@ if __name__ == '__main__':
                                                         placed_blocks_coords.append((place_block_x, place_block_y))
                                                         chunk_cx, chunk_cy = get_chunk_coords(place_block_x, place_block_y)
                                                         affected_chunks.add((chunk_cx, chunk_cy)) # set_block_at already marks modified
+                                                        last_placement = (place_block_x, place_block_y, block_type_to_place)  # Track last placement
                                                     else:
                                                         placement_successful = False
                                                         print(f"ERROR: Failed to place part of multi-block at ({place_block_x},{place_block_y})")
@@ -727,11 +853,13 @@ if __name__ == '__main__':
                                         if set_block_at(block_x, block_y, block_type_to_place):
                                             crafting_system.register_table(block_x, block_y)
                                             inventory.remove_item(inventory.selected_slot)
+                                            last_placement = (block_x, block_y, block_type_to_place)  # Track last placement
                                     elif block_type_to_place == config.STORAGE_CHEST:
                                         if set_block_at(block_x, block_y, block_type_to_place):
                                             if multi_block_system.register_multi_block(block_x, block_y, block_type_to_place):
                                                 storage_system.register_storage(block_x, block_y)
                                                 inventory.remove_item(inventory.selected_slot)
+                                                last_placement = (block_x, block_y, block_type_to_place)  # Track last placement
                                             else:
                                                 set_block_at(block_x, block_y, config.EMPTY) # Revert
                                                 print(f"Failed to register multi-block for storage chest at Block({block_x},{block_y})")
@@ -740,6 +868,7 @@ if __name__ == '__main__':
                                             if multi_block_system.register_multi_block(block_x, block_y, block_type_to_place):
                                                 conveyor_system.register_conveyor(block_x, block_y)
                                                 inventory.remove_item(inventory.selected_slot)
+                                                last_placement = (block_x, block_y, block_type_to_place)  # Track last placement
                                             else:
                                                 set_block_at(block_x, block_y, config.EMPTY) # Revert
                                                 print(f"Failed to register multi-block for conveyor at Block({block_x},{block_y})")
@@ -749,6 +878,7 @@ if __name__ == '__main__':
                                                 extractor_system.register_extractor(block_x, block_y)
                                                 extractor_system.set_direction(block_x, block_y, 0)
                                                 inventory.remove_item(inventory.selected_slot)
+                                                last_placement = (block_x, block_y, block_type_to_place)  # Track last placement
                                             else:
                                                 set_block_at(block_x, block_y, config.EMPTY) # Revert
                                                 print(f"Failed to register multi-block for extractor at Block({block_x},{block_y})")
@@ -756,9 +886,11 @@ if __name__ == '__main__':
                                         if set_block_at(block_x, block_y, block_type_to_place):
                                             auto_miner_system.register_miner(block_x, block_y)
                                             inventory.remove_item(inventory.selected_slot)
+                                            last_placement = (block_x, block_y, block_type_to_place)  # Track last placement
                                     else: # Default case for simple blocks
                                         if set_block_at(block_x, block_y, block_type_to_place):
                                             inventory.remove_item(inventory.selected_slot)
+                                            last_placement = (block_x, block_y, block_type_to_place)  # Track last placement
                                 # ... (rest of right-click logic) ...
 
                     elif event.type == pygame.MOUSEBUTTONUP:
