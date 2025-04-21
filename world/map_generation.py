@@ -4,73 +4,17 @@ import random
 import core.config as config
 from scipy.ndimage import gaussian_filter
 import math
+try:
+    # Import the new library
+    from perlin_noise import PerlinNoise as PerlinNoiseGenerator
+except ImportError:
+    print("ERREUR: Le module 'perlin-noise' n'est pas installé. Installez-le avec 'pip install perlin-noise'")
+    raise
 
 from world.biomes import get_biome
 
-# Create a simple Perlin noise implementation
-class PerlinNoise:
-    def __init__(self, seed=config.SEED):
-        random.seed(seed)
-        self.p = list(range(256))
-        random.shuffle(self.p)
-        self.p += self.p
-
-    def fade(self, t):
-        return t * t * t * (t * (t * 6 - 15) + 10)
-
-    def lerp(self, t, a, b):
-        return a + t * (b - a)
-
-    def grad(self, hash, x, y, z):
-        h = hash & 15
-        u = x if h < 8 else y
-        v = y if h < 4 else (x if h == 12 or h == 14 else z)
-        return (u if (h & 1) == 0 else -u) + (v if (h & 2) == 0 else -v)
-
-    def noise(self, x, y, z=0):
-        X = int(x) & 255
-        Y = int(y) & 255
-        Z = int(z) & 255
-        
-        x -= int(x)
-        y -= int(y)
-        z -= int(z)
-        
-        u = self.fade(x)
-        v = self.fade(y)
-        w = self.fade(z)
-        
-        A = self.p[X] + Y
-        AA = self.p[A] + Z
-        AB = self.p[A + 1] + Z
-        B = self.p[X + 1] + Y
-        BA = self.p[B] + Z
-        BB = self.p[B + 1] + Z
-        
-        return self.lerp(w, self.lerp(v, self.lerp(u, self.grad(self.p[AA], x, y, z),
-                                                 self.grad(self.p[BA], x - 1, y, z)),
-                                     self.lerp(u, self.grad(self.p[AB], x, y - 1, z),
-                                             self.grad(self.p[BB], x - 1, y - 1, z))),
-                         self.lerp(v, self.lerp(u, self.grad(self.p[AA + 1], x, y, z - 1),
-                                              self.grad(self.p[BA + 1], x - 1, y, z - 1)),
-                                  self.lerp(u, self.grad(self.p[AB + 1], x, y - 1, z - 1),
-                                          self.grad(self.p[BB + 1], x - 1, y - 1, z - 1))))
-
-def octave_noise(perlin, x, y, octaves=1, persistence=0.5, lacunarity=2.0):
-    total = 0
-    frequency = 1
-    amplitude = 1
-    max_value = 0
-    for i in range(octaves):
-        total += perlin.noise(x * frequency, y * frequency) * amplitude
-        max_value += amplitude
-        amplitude *= persistence
-        frequency *= lacunarity
-    return total / max_value if max_value > 0 else 0
-
 def generate_chunk(chunk_array, chunk_x, chunk_y, seed, get_chunk_seed=None):
     """Generates terrain for a chunk in Terraria style with biomes."""
-    # --- DEBUG: Confirm function execution ---
     # (Debug prints removed)
     
     # Utilise un seed unique par chunk si fourni
@@ -78,8 +22,18 @@ def generate_chunk(chunk_array, chunk_x, chunk_y, seed, get_chunk_seed=None):
         world_seed = get_chunk_seed(seed, chunk_x, chunk_y)
     else:
         world_seed = seed
-    perlin = PerlinNoise(seed=world_seed)
-    
+
+    # Create noise generator instances with the world seed
+    # You might need different instances with different octave counts
+    noise_gen_low_freq = PerlinNoiseGenerator(seed=world_seed, octaves=2)
+    noise_gen_med_freq = PerlinNoiseGenerator(seed=world_seed, octaves=4)
+    noise_gen_high_freq = PerlinNoiseGenerator(seed=world_seed, octaves=1)
+    noise_gen_ore_1 = PerlinNoiseGenerator(seed=world_seed, octaves=3)
+    noise_gen_ore_2 = PerlinNoiseGenerator(seed=world_seed, octaves=2)
+    noise_gen_ore_3 = PerlinNoiseGenerator(seed=world_seed, octaves=4)
+    noise_gen_ore_blob = PerlinNoiseGenerator(seed=world_seed, octaves=2)
+    noise_gen_hole = PerlinNoiseGenerator(seed=world_seed, octaves=2)
+
     # Global world coordinates
     world_offset_x = chunk_x * config.CHUNK_SIZE
     world_offset_y = chunk_y * config.CHUNK_SIZE
@@ -95,7 +49,6 @@ def generate_chunk(chunk_array, chunk_x, chunk_y, seed, get_chunk_seed=None):
     # Generate heightmap using biome properties per column
     for x in range(config.CHUNK_SIZE):
         world_x = world_offset_x + x
-        # Get the biome for this column using advanced noise selection
         biome = get_biome(world_x, 0, seed)
         
         # Constants from biome properties
@@ -106,52 +59,41 @@ def generate_chunk(chunk_array, chunk_x, chunk_y, seed, get_chunk_seed=None):
         BASE_HEIGHT = biome.base_height
         HEIGHT_VARIATION = biome.height_variation
         
-        # Scale factors for noise
-        terrain_scale_x = 0.008  # Encore plus petites = collines plus larges et douces
-        terrain_scale_y = 0.01
-        cave_scale = 0.045  # Caves plus irrégulières
-        ore_scale = 0.035  # Ores plus irréguliers
-
-        # Ajout de plateaux et de falaises
+        # Scale factors for noise (may need adjustment for perlin-noise)
+        terrain_scale_x = 0.008
+        # terrain_scale_y = 0.01 # Not used for 1D heightmap noise
+        cave_scale = 0.045
+        ore_scale = 0.035
         plateau_noise_scale = 0.002
-        plateau_threshold = 0.8 # Moins de plateaux
+        cliff_noise_scale = 0.02 # Renamed for clarity
+        large_scale_variation_scale = 0.001
+        base_offset_scale = 0.005
+        hole_scale = 0.03
 
-        # Add low-frequency noise for large-scale terrain variation
-        large_scale_variation = octave_noise(perlin, world_x * 0.001, 0, octaves=2) * 60  # Significantly increased multiplier for more dramatic large scale variation
-        
-        # Plateaux plats
-        plateau_val = octave_noise(perlin, world_x * plateau_noise_scale, 0, octaves=1)
-        if plateau_val > plateau_threshold:
-            plateau_offset = 10 # Plateaux un peu plus hauts
-        else:
-            plateau_offset = 0
+        # Use the new noise generators
+        # Note: perlin-noise takes a list/tuple of coordinates [x] or [x, y]
+        large_scale_variation = noise_gen_low_freq([world_x * large_scale_variation_scale]) * 60
 
-        # Falaise abrupte
-        cliff_val = octave_noise(perlin, world_x * 0.02, 0, octaves=1)
-        cliff_offset = 0
-        if cliff_val > 0.85: # Falaises moins fréquentes
-            cliff_offset = int((cliff_val -  0.85) * 40) # Falaises plus hautes
-        
-        # Calculate surface height using 1D noise for the x-coordinate
-        # This ensures consistent terrain across the x-axis
-        noise_val = octave_noise(perlin, world_x * terrain_scale_x, 0, octaves=4, persistence=0.6) # Fewer octaves, higher persistence for smoother hills
-        # --- SAFETY CLAMP --- Limit noise_val to expected range
-        noise_val = max(-1.0, min(noise_val, 1.0))
-        
-        # Variable base height using noise
-        base_offset = octave_noise(perlin, world_x * 0.005, 0, octaves=2) * 25  # Increased base variation multiplier
-        
-        # Map noise to surface height
-        # Significantly increase the impact of HEIGHT_VARIATION and noise_val
-        # Reduce the multiplier significantly to avoid extreme amplification
-        local_surface = BASE_HEIGHT + int(base_offset) + int(HEIGHT_VARIATION * 2.5 * (noise_val * 2 - 1)) + int(large_scale_variation) + plateau_offset + cliff_offset
+        plateau_val = noise_gen_high_freq([world_x * plateau_noise_scale])
+        plateau_offset = 10 if plateau_val > plateau_threshold else 0
+
+        cliff_val = noise_gen_high_freq([world_x * cliff_noise_scale])
+        cliff_offset = int((cliff_val - 0.85) * 40) if cliff_val > 0.85 else 0
+
+        noise_val = noise_gen_med_freq([world_x * terrain_scale_x]) # persistence/lacunarity are part of PerlinNoiseGenerator init if needed
+
+        base_offset = noise_gen_low_freq([world_x * base_offset_scale]) * 25
+
+        # Map noise to surface height (adjust multipliers as needed for the new noise range)
+        # perlin-noise output range is roughly [-0.7, 0.7] for 1D/2D
+        local_surface = BASE_HEIGHT + int(base_offset) + int(HEIGHT_VARIATION * 2.5 * noise_val) + int(large_scale_variation) + plateau_offset + cliff_offset
         heightmap[x] = local_surface
     
     # Ajout de trous/creux de surface
     for x in range(2, config.CHUNK_SIZE-2):
-        hole_noise = octave_noise(perlin, (world_offset_x + x) * 0.03, 0, octaves=2)
-        if hole_noise > 0.85:
-            heightmap[x] += 6  # Creuse un trou
+        hole_noise = noise_gen_hole([(world_offset_x + x) * hole_scale])
+        if hole_noise > 0.85: # Adjust threshold if needed
+            heightmap[x] += 6
     
     # Apply more aggressive smoothing to the heightmap
     heightmap = gaussian_filter(heightmap, sigma=3.5).astype(int)  # Slightly reduced sigma to retain some of the new variation
@@ -184,24 +126,29 @@ def generate_chunk(chunk_array, chunk_x, chunk_y, seed, get_chunk_seed=None):
                 
                 # ENHANCED ORE DISTRIBUTION - REDUCED ORE GENERATION
                 # Use different noise patterns for different ore types
-                ore_noise_1 = octave_noise(perlin, world_x * ore_scale, world_y * ore_scale, octaves=3)
-                ore_noise_2 = octave_noise(perlin, world_x * ore_scale * 1.7, world_y * ore_scale * 1.7, octaves=2)
-                ore_noise_3 = octave_noise(perlin, world_x * ore_scale * 0.5, world_y * ore_scale * 0.5, octaves=4)
-                
-                # Depth-based ore distribution - REDUCED ORE GENERATION
-                if depth > 40 and ore_noise_1 > 0.85 * ORE_RARITY:  # Deeper and rarer diamond
+                ore_noise_1 = noise_gen_ore_1([world_x * ore_scale, world_y * ore_scale])
+                ore_noise_2 = noise_gen_ore_2([world_x * ore_scale * 1.7, world_y * ore_scale * 1.7])
+                ore_noise_3 = noise_gen_ore_3([world_x * ore_scale * 0.5, world_y * ore_scale * 0.5])
+
+                # Adjust thresholds based on the new noise range [-0.7, 0.7] approx
+                # Example: old threshold 0.85 might become 0.6? Needs tuning.
+                diamond_threshold = 0.6 * ORE_RARITY # Tuned threshold
+                iron_threshold = 0.55 * ORE_RARITY # Tuned threshold
+                gravel_threshold = 0.5 * ORE_RARITY # Tuned threshold
+                sand_threshold = 0.6 # Tuned threshold
+
+                if depth > 40 and ore_noise_1 > diamond_threshold:
                     chunk_array[y, x] = config.DIAMOND_ORE
-                elif depth > 25 and ore_noise_2 > 0.80 * ORE_RARITY:  # Rarer iron
+                elif depth > 25 and ore_noise_2 > iron_threshold:
                     chunk_array[y, x] = config.IRON_ORE
-                elif depth > 8 and ore_noise_3 > 0.78 * ORE_RARITY:  # Rarer gravel
+                elif depth > 8 and ore_noise_3 > gravel_threshold:
                     chunk_array[y, x] = config.GRAVEL
-                # Add sand patches using noise
-                elif 5 < depth < 25 and ore_noise_2 > 0.85: # Rarer sand patches
+                elif 5 < depth < 25 and ore_noise_2 > sand_threshold:
                     chunk_array[y, x] = config.SAND
 
-                # Grosse poche de minerais
-                ore_blob = octave_noise(perlin, world_x * ore_scale * 0.5, world_y * ore_scale * 0.5, octaves=2)
-                if ore_blob > 0.92 and depth > 15: # Much rarer ore blobs
+                ore_blob = noise_gen_ore_blob([world_x * ore_scale * 0.5, world_y * ore_scale * 0.5])
+                blob_threshold = 0.65 # Tuned threshold
+                if ore_blob > blob_threshold and depth > 15:
                     chunk_array[y, x] = config.IRON_ORE
     
     # --- DEBUG: Force a specific block to be empty after terrain fill ---

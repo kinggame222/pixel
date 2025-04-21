@@ -9,13 +9,13 @@ from scipy.ndimage import gaussian_filter
 # Import conditionnel des bibliothèques GPU
 try:
     import numba
-    from numba import cuda, float32, int32, boolean
+    from numba import cuda, float32, int32, boolean  # type: ignore
     NUMBA_AVAILABLE = True
 except ImportError:
     NUMBA_AVAILABLE = False
 
 try:
-    import pyopencl as cl
+    import pyopencl as cl  # type: ignore
     import pyopencl.array
     PYOPENCL_AVAILABLE = True
 except ImportError:

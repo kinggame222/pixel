@@ -22,41 +22,23 @@ class MultiBlockSystem:
 
     def register_multi_block(self, origin_x, origin_y, block_type):
         """Registers a multi-block structure at the given origin."""
-        # --- Debug Print ---
-        print(f"[DEBUG register_multi_block] Attempting to register type {block_type} at ({origin_x}, {origin_y})")
-        # --- End Debug ---
 
         if block_type not in self.block_sizes:
-            # --- Debug Print ---
-            print(f"[DEBUG register_multi_block] FAILED: Block type {block_type} not found in self.block_sizes.")
-            # --- End Debug ---
-            # Attempt to get size dynamically if missing? Risky. Better to ensure it's defined.
             size = config.BLOCKS.get(block_type, {}).get("size")
             if size:
-                 print(f"[DEBUG register_multi_block] Dynamically found size {size} for {block_type}. Adding to self.block_sizes.")
                  self.block_sizes[block_type] = size
             else:
-                 print(f"[DEBUG register_multi_block] FAILED: Could not determine size for block type {block_type}.")
-                 return False # Cannot register without size info
+                 return False
 
         width, height = self.block_sizes[block_type]
-        # --- Debug Print ---
-        print(f"[DEBUG register_multi_block] Using size ({width}x{height}) for type {block_type}")
-        # --- End Debug ---
 
         parts = set()
-        # Check if the area is clear in the multi-block system's view
         for dx in range(width):
             for dy in range(height):
                 check_x = origin_x + dx
                 check_y = origin_y + dy
                 if (check_x, check_y) in self.multi_block_origins:
-                    # --- Debug Print ---
-                    existing_origin = self.multi_block_origins[(check_x, check_y)]
-                    existing_type = self.multi_block_structures.get(existing_origin, {}).get("type", "UNKNOWN")
-                    print(f"[DEBUG register_multi_block] FAILED: Space at ({check_x}, {check_y}) is already occupied by structure type {existing_type} with origin {existing_origin}.")
-                    # --- End Debug ---
-                    return False # Space already occupied by another multi-block structure
+                    return False
                 parts.add((check_x, check_y))
 
         # Register the structure
@@ -71,18 +53,12 @@ class MultiBlockSystem:
         for part_x, part_y in parts:
             self.multi_block_origins[(part_x, part_y)] = (origin_x, origin_y)
 
-        # --- Debug Print ---
-        print(f"[DEBUG register_multi_block] SUCCESS: Registered type {block_type} at ({origin_x}, {origin_y}) with parts: {parts}")
-        # --- End Debug ---
         return True
 
     def unregister_multi_block(self, any_x, any_y):
         """Removes a multi-block structure given any coordinate within it."""
         origin = self.get_multi_block_origin(any_x, any_y)
         if not origin:
-            # --- Debug Print ---
-            # print(f"[DEBUG unregister_multi_block] No structure found at ({any_x}, {any_y})")
-            # --- End Debug ---
             return False
 
         if origin in self.multi_block_structures:
@@ -96,17 +72,10 @@ class MultiBlockSystem:
             # Remove the main structure data
             del self.multi_block_structures[origin]
 
-            # --- Debug Print ---
-            print(f"[DEBUG unregister_multi_block] SUCCESS: Unregistered structure with origin {origin} (Type: {structure_data.get('type')})")
-            # --- End Debug ---
             return True
         else:
-             # --- Debug Print ---
-             print(f"[DEBUG unregister_multi_block] WARNING: Origin {origin} found in mapping but not in structures dict.")
-             # Attempt cleanup of the inconsistent mapping entry
              if (any_x, any_y) in self.multi_block_origins:
                  del self.multi_block_origins[(any_x, any_y)]
-             # --- End Debug ---
              return False
 
 
@@ -139,7 +108,6 @@ class MultiBlockSystem:
         # Load data from a saved state
         self.multi_block_origins.clear()
         self.multi_block_structures.clear()
-        print("[MultiBlockSystem] Loading save data...") # Debug
         loaded_count = 0
         for key, structure_data in data.items():
             try:
@@ -155,6 +123,8 @@ class MultiBlockSystem:
                 for part_x, part_y in parts:
                     self.multi_block_origins[(part_x, part_y)] = origin
                 loaded_count += 1
+            except Exception as e:
+                print(f"Error loading multi-block structure with key {key}: {e}")
             except Exception as e:
                 print(f"Error loading multi-block structure with key {key}: {e}")
         print(f"[MultiBlockSystem] Loaded {loaded_count} structures.") # Debug

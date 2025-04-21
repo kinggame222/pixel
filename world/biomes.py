@@ -1,66 +1,12 @@
 import random
 import numpy as np
 from core import config
-
-class PerlinNoise:
-    def __init__(self, seed=config.SEED):
-        random.seed(seed)
-        self.p = list(range(256))
-        random.shuffle(self.p)
-        self.p += self.p
-
-    def fade(self, t):
-        return t * t * t * (t * (t * 6 - 15) + 10)
-
-    def lerp(self, t, a, b):
-        return a + t * (b - a)
-
-    def grad(self, hash, x, y, z):
-        h = hash & 15
-        u = x if h < 8 else y
-        v = y if h < 4 else (x if h == 12 or h == 14 else z)
-        return (u if (h & 1) == 0 else -u) + (v if (h & 2) == 0 else -v)
-
-    def noise(self, x, y, z=0):
-        X = int(x) & 255
-        Y = int(y) & 255
-        Z = int(z) & 255
-        
-        x -= int(x)
-        y -= int(y)
-        z -= int(z)
-        
-        u = self.fade(x)
-        v = self.fade(y)
-        w = self.fade(z)
-        
-        A = self.p[X] + Y
-        AA = self.p[A] + Z
-        AB = self.p[A + 1] + Z
-        B = self.p[X + 1] + Y
-        BA = self.p[B] + Z
-        BB = self.p[B + 1] + Z
-        
-        return self.lerp(w, self.lerp(v, self.lerp(u, self.grad(self.p[AA], x, y, z),
-                                                 self.grad(self.p[BA], x - 1, y, z)),
-                                     self.lerp(u, self.grad(self.p[AB], x, y - 1, z),
-                                             self.grad(self.p[BB], x - 1, y - 1, z))),
-                         self.lerp(v, self.lerp(u, self.grad(self.p[AA + 1], x, y, z - 1),
-                                              self.grad(self.p[BA + 1], x - 1, y, z - 1)),
-                                  self.lerp(u, self.grad(self.p[AB + 1], x, y - 1, z - 1),
-                                          self.grad(self.p[BB + 1], x - 1, y - 1, z - 1))))
-
-def octave_noise(perlin, x, y, octaves=1, persistence=0.5, lacunarity=2.0):
-    total = 0
-    frequency = 1
-    amplitude = 1
-    max_value = 0
-    for i in range(octaves):
-        total += perlin.noise(x * frequency, y * frequency) * amplitude
-        max_value += amplitude
-        amplitude *= persistence
-        frequency *= lacunarity
-    return total / max_value if max_value > 0 else 0
+try:
+    # Import the new library
+    from perlin_noise import PerlinNoise as PerlinNoiseGenerator
+except ImportError:
+    print("ERREUR: Le module 'perlin-noise' n'est pas installé. Installez-le avec 'pip install perlin-noise'")
+    raise
 
 class Biome:
     def __init__(self, name, surface_block, base_height, height_variation, dirt_depth, tree_density, ore_rarity):
@@ -83,11 +29,38 @@ biome_list = [
 ]
   
 def get_biome(world_x, world_y, seed):
-    # Use custom Perlin noise to smoothly select a biome
-    scale = 0.001  # adjust noise frequency
-    perlin = PerlinNoise(seed=seed)
-    noise_value = (perlin.noise(world_x * scale, world_y * scale) + 1) / 2  # normalize to 0-1
-    index = int(noise_value * len(biome_list))
-    if index >= len(biome_list):
-        index = len(biome_list) - 1
-    return biome_list[index]
+    try:
+        # Create a noise generator instance for biomes
+        biome_noise_generator = PerlinNoiseGenerator(seed=seed, octaves=2) # Example octaves
+
+        # Use the noise library to smoothly select a biome
+        scale = 0.001  # adjust noise frequency
+
+        noise_value = 0.5 # Default value in case noise fails
+        try:
+            # Use the new library's noise function
+            raw_noise = biome_noise_generator([world_x * scale, world_y * scale])
+            noise_value = (raw_noise + 0.707) / 1.414 # Normalize approx range to [0, 1]
+            noise_value = max(0.0, min(1.0, noise_value)) # Clamp to [0, 1] just in case
+        except Exception as noise_error:
+            print(f"[ERROR] perlin_noise failed: {noise_error}")
+            import traceback
+            traceback.print_exc()
+            # Continue with default noise_value to see if the rest works
+
+        index = int(noise_value * len(biome_list))
+
+        if index >= len(biome_list):
+            index = len(biome_list) - 1
+        elif index < 0:
+             index = 0
+
+        biome = biome_list[index]
+        return biome
+
+    except Exception as e:
+        print(f"[ERROR] get_biome failed unexpectedly for world_x={world_x}, world_y={world_y}, seed={seed}: {e}")
+        import traceback
+        traceback.print_exc()
+        # Fallback: return Plains biome
+        return biome_list[0]
