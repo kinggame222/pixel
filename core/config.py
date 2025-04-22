@@ -4,7 +4,7 @@ import time
 
 # --- Game Configuration ---
 
-PIXEL_SIZE = 4  # Augmenter la taille des pixels pour un effet de zoom
+PIXEL_SIZE = 16  # Augmenter la taille des pixels pour un effet de zoom
 
 SEED = int(time.time())  # Seed for world generation (non-deterministic)
 PLAYER_WIDTH = 2 * PIXEL_SIZE
@@ -14,13 +14,11 @@ PLAYER_SPEED = 500
 ANIM_DURATION = 100
  
 # --- Chunk Management ---
-CHUNK_SIZE = 16 # Taille actuelle d'un chunk (5x5 blocs)
-# Pour augmenter le terrain par chunk, changez cette valeur, par exemple:
-# CHUNK_SIZE = 16  # Un chunk de 16x16 blocs
+CHUNK_SIZE = 16 
 
 # --- Graphics Settings ---
-WINDOW_TITLE = "Pixel Mining - Modular"
-FPS_CAP = 165
+WINDOW_TITLE = "Pixel Mining"
+FPS_CAP = 65
 
 # --- Physics ---
 GRAVITY = 500
@@ -61,19 +59,10 @@ except FileNotFoundError:
 # --- Create a dictionary to map block IDs to properties ---
 BLOCKS = {block["id"]: block for block in BLOCK_PROPERTIES}
 
-# --- Dynamically Create Constants for Block IDs ---
-# For example, EMPTY = 0, STONE = 1, etc.
+# --- Dynamically Create Constants for Block Names ---
+# e.g., EMPTY = 0, GRASS = 9, COPPER_ORE = 25, etc.
 for block in BLOCK_PROPERTIES:
     globals()[block["name"].upper()] = block["id"]
-
-# Make sure ORE_PROCESSOR is defined
-if "ORE_PROCESSOR" not in globals():
-    print("Warning: ORE_PROCESSOR not found in blocks.json, using default ID 12")
-    globals()["ORE_PROCESSOR"] = 12
-
-# Add Snow Block ID
-SNOW_BLOCK = 20
-
 
 # --- Colors ---
 COLOR_FPS = (255, 255, 0)

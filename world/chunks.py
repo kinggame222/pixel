@@ -5,6 +5,7 @@ import time
 import json
 import os
 import traceback
+import random # Import random
 from world.map_generation import generate_chunk as generate_chunk_terrain_cpu
 from core import config
 
@@ -25,12 +26,16 @@ if GPU_GENERATION_ENABLED:
 else:
     print("No compatible GPU detected or GPU module not found. Using CPU for terrain generation.")
 
+# Add a dict to hold user‐modified chunk data persistently
+user_modified_chunks = {}
+
 loaded_chunks = {}
 modified_chunks = set()
 chunk_generation_queue = queue.Queue()
 chunk_worker_running = threading.Event()
 chunk_lock = threading.RLock()
 generating_chunks = set()
+initial_save_chunks = {} # Store chunks loaded from save file initially
 
 # --- Coordinate System Refactor ---
 # All functions below now expect world BLOCK coordinates (integers), not pixel coordinates.
@@ -96,10 +101,13 @@ def set_block_at(world_block_x, world_block_y, block_type):
             return False
 
 def mark_chunk_modified(chunk_x, chunk_y):
-    """Marks a chunk as modified."""
+    """Marks a chunk as modified and saves a copy."""
     with chunk_lock:
-        if (chunk_x, chunk_y) in loaded_chunks:
-             modified_chunks.add((chunk_x, chunk_y))
+        coord = (chunk_x, chunk_y)
+        if coord in loaded_chunks:
+            modified_chunks.add(coord)
+            # persist a copy of the modified chunk
+            user_modified_chunks[coord] = loaded_chunks[coord].copy()
 
 def generate_chunk_data(chunk_x, chunk_y, seed):
     if GPU_GENERATION_ENABLED and generate_chunk_gpu:
@@ -114,7 +122,7 @@ def generate_chunk_data(chunk_x, chunk_y, seed):
     chunk_data = np.zeros((config.CHUNK_SIZE, config.CHUNK_SIZE), dtype=np.int32)
     chunk_data.fill(config.EMPTY)
     try:
-        chunk_data = generate_chunk_terrain_cpu(chunk_data, chunk_x, chunk_y, seed)
+        chunk_data = generate_chunk_terrain_cpu(chunk_data, chunk_x, chunk_y, seed, get_chunk_seed=get_chunk_seed)
         invalid_blocks = np.isin(chunk_data, list(config.BLOCKS.keys()), invert=True)
         if np.any(invalid_blocks):
             print(f"Warning: CPU generation created invalid block IDs in chunk ({chunk_x}, {chunk_y}). Replacing with EMPTY.")
@@ -125,42 +133,47 @@ def generate_chunk_data(chunk_x, chunk_y, seed):
         traceback.print_exc()
         return np.full((config.CHUNK_SIZE, config.CHUNK_SIZE), config.EMPTY, dtype=np.int32)
 
+# --- Chunk Seed Generation ---
+def get_chunk_seed(chunk_x, chunk_y, world_seed):
+    """Generates a unique, deterministic seed for a given chunk."""
+    # Combine world seed and chunk coordinates in a stable way
+    # Using large prime numbers can help distribute seeds better
+    seed_str = f"{world_seed}-{chunk_x * 73856093}-{chunk_y * 19349663}"
+    # Hash the string to get an integer seed
+    return hash(seed_str)
+
 def generate_chunk_worker():
     while chunk_worker_running.is_set():
         try:
             chunk_x, chunk_y, seed = chunk_generation_queue.get(timeout=0.1)
-
-            should_generate = False
+            coord = (chunk_x, chunk_y)
+            should_gen = False
             with chunk_lock:
-                if (chunk_x, chunk_y) not in loaded_chunks and (chunk_x, chunk_y) not in generating_chunks:
-                    generating_chunks.add((chunk_x, chunk_y))
-                    should_generate = True
+                if coord not in loaded_chunks and coord not in generating_chunks:
+                    generating_chunks.add(coord)
+                    should_gen = True
 
-            if should_generate:
-                new_chunk_data = None
-                try:
-                    new_chunk_data = generate_chunk_data(chunk_x, chunk_y, seed)
+            if should_gen:
+                # Prefer user modifications over save or fresh generation
+                if coord in user_modified_chunks:
+                    new_chunk = user_modified_chunks[coord]
+                elif coord in initial_save_chunks:
+                    new_chunk = initial_save_chunks[coord]
+                else:
+                    new_chunk = generate_chunk_data(chunk_x, chunk_y, seed)
 
-                    with chunk_lock:
-                        if (chunk_x, chunk_y) not in loaded_chunks:
-                            if new_chunk_data is not None:
-                                loaded_chunks[(chunk_x, chunk_y)] = new_chunk_data
-                                modified_chunks.add((chunk_x, chunk_y))
-                        generating_chunks.discard((chunk_x, chunk_y))
-                except Exception as e:
-                    print(f"Error processing chunk ({chunk_x}, {chunk_y}) in worker: {e}")
-                    traceback.print_exc()
-                    with chunk_lock:
-                        generating_chunks.discard((chunk_x, chunk_y))
-                finally:
-                    chunk_generation_queue.task_done()
+                with chunk_lock:
+                    # only load if still not present
+                    if coord not in loaded_chunks:
+                        loaded_chunks[coord] = new_chunk
+                    generating_chunks.discard(coord)
+                chunk_generation_queue.task_done()
             else:
                 chunk_generation_queue.task_done()
-
         except queue.Empty:
             time.sleep(0.1)
         except Exception as e:
-            print(f"Error in chunk worker loop: {e}")
+            print(f"Error in chunk worker: {e}")
             traceback.print_exc()
             time.sleep(0.5)
 
@@ -186,10 +199,16 @@ def stop_chunk_workers(workers):
     print("Stopping chunk workers...")
     chunk_worker_running.clear()
 
-    q_size = chunk_generation_queue.qsize()
-    if q_size > 0:
-        print(f"Waiting for {q_size} chunks in queue to be processed or workers to time out...")
-        chunk_generation_queue.join()
+    # Drain pending tasks to avoid deadlock on queue.join()
+    pending = chunk_generation_queue.qsize()
+    if pending > 0:
+        print(f"Cancelling {pending} pending chunk tasks...")
+        while not chunk_generation_queue.empty():
+            try:
+                chunk_generation_queue.get_nowait()
+                chunk_generation_queue.task_done()
+            except queue.Empty:
+                break
 
     for worker in workers:
         worker.join(timeout=1.0)
@@ -226,8 +245,9 @@ def ensure_chunks_around_point(pixel_x, pixel_y, radius_chunks):
         chunk_generation_queue.put((cx, cy, config.SEED))
         queued_count += 1
 
-def unload_distant_chunks(pixel_x, pixel_y, unload_distance_chunks):
+def unload_distant_chunks(pixel_x, pixel_y, unload_distance_chunks, rendered_chunk_cache):
     """Unloads chunks that are farther than unload_distance_chunks from the central PIXEL coordinate."""
+
     # Convert center pixel coordinates to center chunk coordinates
     center_chunk_x = int(pixel_x // (config.CHUNK_SIZE * config.PIXEL_SIZE))
     center_chunk_y = int(pixel_y // (config.CHUNK_SIZE * config.PIXEL_SIZE))
@@ -253,6 +273,7 @@ def unload_distant_chunks(pixel_x, pixel_y, unload_distance_chunks):
                 if chunk_pos in loaded_chunks:
                     del loaded_chunks[chunk_pos]
                     modified_chunks.discard(chunk_pos) # Remove from modified set as well
+                    rendered_chunk_cache.pop(chunk_pos, None) # Clear the render cache for the unloaded chunk
                     unloaded_count += 1
 
 def get_active_chunks(pixel_x, pixel_y, screen_width, screen_height, view_multiplier, max_chunks):
@@ -329,7 +350,7 @@ def save_world_to_file(filename, storage_system, player_pos, conveyor_system=Non
         print(f"Error saving world to {filename}: {e}")
         traceback.print_exc()
 
-def load_world_from_file(filename, storage_system, conveyor_system=None, extractor_system=None, multi_block_system=None, auto_miner_system=None):
+def load_world_from_file(filename, storage_system, rendered_chunk_cache, conveyor_system=None, extractor_system=None, multi_block_system=None, auto_miner_system=None):
     """Loads world state from a file."""
     print(f"Attempting to load world from {filename}...")
     start_time = time.time()
@@ -338,9 +359,12 @@ def load_world_from_file(filename, storage_system, conveyor_system=None, extract
             loaded_data = json.load(f)
 
         with chunk_lock:
+            # Clear current world state
             loaded_chunks.clear()
             modified_chunks.clear()
             generating_chunks.clear()
+            initial_save_chunks.clear() # Clear initial save cache
+            rendered_chunk_cache.clear() # Clear render cache on load
             storage_system.storages.clear()
             if conveyor_system:
                 conveyor_system.conveyors.clear()
@@ -358,11 +382,14 @@ def load_world_from_file(filename, storage_system, conveyor_system=None, extract
             print(f"Loaded world seed: {config.SEED}")
 
             loaded_chunk_count = 0
+            # Load chunks into BOTH loaded_chunks and initial_save_chunks
             for key, chunk_data_list in loaded_data.get("chunks", {}).items():
                 try:
                     x_str, y_str = key.split(',')
                     chunk_coord = (int(x_str), int(y_str))
-                    loaded_chunks[chunk_coord] = np.array(chunk_data_list, dtype=config.CHUNK_DATA_TYPE)
+                    chunk_np_data = np.array(chunk_data_list, dtype=config.CHUNK_DATA_TYPE)
+                    loaded_chunks[chunk_coord] = chunk_np_data
+                    initial_save_chunks[chunk_coord] = chunk_np_data # Store in initial cache
                     loaded_chunk_count += 1
                 except Exception as e:
                     print(f"Error loading chunk data for key {key}: {e}")
@@ -385,13 +412,16 @@ def load_world_from_file(filename, storage_system, conveyor_system=None, extract
 
     except FileNotFoundError:
         print(f"Save file {filename} not found.")
+        with chunk_lock: initial_save_chunks.clear() # Clear cache if file not found
         return False, (0, 0)
     except json.JSONDecodeError as e:
         print(f"Error decoding JSON from {filename}: {e}")
+        with chunk_lock: initial_save_chunks.clear() # Clear cache on decode error
         return False, (0, 0)
     except Exception as e:
         print(f"An unexpected error occurred loading world from {filename}: {e}")
         traceback.print_exc()
+        with chunk_lock: initial_save_chunks.clear() # Clear cache on other errors
         return False, (0, 0)
 
 def ensure_origin_chunk_exists():
@@ -413,5 +443,6 @@ __all__ = [
     'start_chunk_workers', 'stop_chunk_workers',
     'ensure_chunks_around_point', 'unload_distant_chunks', 'get_active_chunks',
     'save_world_to_file', 'load_world_from_file', 'chunk_lock', 'generating_chunks',
-    'ensure_origin_chunk_exists', 'chunk_generation_queue', 'loaded_chunks', 'modified_chunks'
+    'ensure_origin_chunk_exists', 'chunk_generation_queue', 'loaded_chunks', 'modified_chunks',
+    'initial_save_chunks'
 ]

@@ -81,7 +81,7 @@
   },
   {
     "id": 5,
-    "name": "wood",
+    "name": "TREE_TRUNK",
     "color": [160, 100, 50],
     "solid": false,
     "gravity": false,
@@ -344,6 +344,32 @@
     "mining_cooldown": 2.0,
     "drops": {
       "24": 1.0
+    }
+  },
+  {
+    "id": 25,
+    "name": "copper_ore",
+    "color": [184, 115, 51],
+    "solid": true,
+    "gravity": false,
+    "hardness": 8,
+    "density": 8940,
+    "breakable": true,
+    "drops": {
+      "25": 1.0
+    }
+  },
+  {
+    "id": 26,
+    "name": "gold_ore",
+    "color": [255, 215, 0],
+    "solid": true,
+    "gravity": false,
+    "hardness": 12,
+    "density": 19300,
+    "breakable": true,
+    "drops": {
+      "26": 1.0
     }
   }
 ]

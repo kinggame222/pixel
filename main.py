@@ -1,1172 +1,763 @@
-print("=== main.py is being executed ===")
-try:
-    import pygame
-    import cProfile
-    import time
-    import sys
-    import os
-    import random
-    import numpy as np
-    import threading
-    import queue
-    import json
-    import math
-    import copy
+import pygame
+import yappi 
+import time
+import sys
+import os
+import random
+import numpy as np
+import threading
+import queue
+import json
+import math
+import copy
 
-    import gc
-    import traceback
+import gc
+import traceback
 
-    # Import core modules
-    from core import config
+# Import core modules
+from core import config
 
-    # Import the queue explicitly from chunks 
-    from world.chunks import (chunk_generation_queue, loaded_chunks, modified_chunks, 
-                            generating_chunks,  # Import generating_chunks
-                            chunk_lock, get_chunk_coords, 
-                            ensure_chunks_around_point, unload_distant_chunks, 
-                            get_active_chunks, set_block_at, get_block_at,
-                            mark_chunk_modified, start_chunk_workers, stop_chunk_workers,
-                            save_world_to_file, load_world_from_file,
-                            ensure_origin_chunk_exists)  # Import ensure_origin_chunk_exists
+# Import the queue explicitly from chunks 
+from world.chunks import (chunk_generation_queue, loaded_chunks, modified_chunks, 
+                        generating_chunks,  # Import generating_chunks
+                        chunk_lock, get_chunk_coords, 
+                        ensure_chunks_around_point, unload_distant_chunks, 
+                        get_active_chunks, set_block_at, get_block_at,
+                        mark_chunk_modified, start_chunk_workers, stop_chunk_workers,
+                        save_world_to_file, load_world_from_file,
+                        ensure_origin_chunk_exists, initial_save_chunks)  # Import initial_save_chunks
 
-    from entities.player import Player
-    from ui.inventory import Inventory
-    from ui.machine_ui import MachineUI
-    from systems.machine_system import MachineSystem
-    from utils.rendering import create_block_surfaces, render_chunk, draw_performance_stats, render_block
-    from systems.crafting_system import CraftingSystem
-    from ui.crafting_ui import CraftingUI
-    from systems.storage_system import StorageSystem
-    from systems.conveyor_system import ConveyorSystem
-    from ui.storage_ui import StorageUI
-    from systems.multi_block_system import MultiBlockSystem
-    from systems.extractor_system import ExtractorSystem
-    from systems.auto_miner_system import AutoMinerSystem  # Import the new system
-    from utils.background import generate_clouds, generate_hills, generate_stars, draw_background
-    from world.block_utils import apply_gravity
+from entities.player import Player
+from ui.inventory import Inventory, HOTBAR_SIZE  # Import HOTBAR_SIZE
+from ui.machine_ui import MachineUI
+from systems.machine_system import MachineSystem
+from utils.rendering import create_block_surfaces, render_chunk, draw_performance_stats, render_block
+from systems.crafting_system import CraftingSystem
+from ui.crafting_ui import CraftingUI
+from systems.storage_system import StorageSystem
+from systems.conveyor_system import ConveyorSystem
+from ui.storage_ui import StorageUI
+from systems.multi_block_system import MultiBlockSystem
+from systems.extractor_system import ExtractorSystem
+from systems.auto_miner_system import AutoMinerSystem  # Import the new system
+from utils.background import generate_clouds, generate_hills, generate_stars, draw_background
+from world.block_utils import apply_gravity
 
-    # Import GPU detection
-    from utils.gpu_detection import GPU_AVAILABLE, detect_gpu
+# Import GPU detection
+from utils.gpu_detection import GPU_AVAILABLE, detect_gpu
 
-    from ui.main_menu import MainMenu
+from ui.main_menu import MainMenu
 
-    # --- Game Settings ---
-    DEBUG_MODE = True          # Enable debug mode
-    SAVE_FILE = "world.json"   # Path to the save file
-    SEED = config.SEED         # World generation seed
-    ENABLE_CHUNK_CACHE = True  # Enable chunk caching for performance
-    MAX_ACTIVE_CHUNKS = 200     # Reduce maximum active chunks to render
-    PERFORMANCE_MONITOR = True # Show performance stats
-    VIEW_DISTANCE_MULTIPLIER = 1.5  # Reduce view distance multiplier
-    CHUNK_LOAD_RADIUS = 4      # Revert to a reasonable value (e.g., 6 or 7)
-    CHUNK_UNLOAD_DISTANCE = 8 # Keep chunks loaded a bit longer than the load radius
-    CHUNK_GEN_THREAD_COUNT = 2 # Augmentez à 4 threads pour une génération plus rapide
-    ENABLE_INFINITE_WORLD = True  # Enable infinite world generation
-    USE_GPU_GENERATION = True  # Use GPU for generation if available
+# --- Game Settings ---
+DEBUG_MODE = False         # Disable debug mode for performance testing
+SAVES_DIR = "saves"        # Define the saves directory
+if not os.path.exists(SAVES_DIR):  # Ensure the saves directory exists
+    os.makedirs(SAVES_DIR)
+CURRENT_SAVE_FILE_NAME = None  # Track the currently loaded save file name
+SAVE_FILE = None           # Path to the save file (set dynamically)
+SEED = None                # World generation seed (set dynamically)
+ENABLE_CHUNK_CACHE = True  # Enable chunk caching for performance
+MAX_ACTIVE_CHUNKS = 64     # Further reduce maximum active chunks to render
+PERFORMANCE_MONITOR = True # Show performance stats
+VIEW_DISTANCE_MULTIPLIER = 1.2  # Slightly reduce view distance multiplier
+CHUNK_LOAD_RADIUS = 4      # Revert to a reasonable value (e.g., 6 or 7)
+CHUNK_UNLOAD_DISTANCE = 8  # Keep chunks loaded a bit longer than the load radius
+CHUNK_GEN_THREAD_COUNT = 2 # Augmentez à 4 threads pour une génération plus rapide
+ENABLE_INFINITE_WORLD = True  # Enable infinite world generation
+USE_GPU_GENERATION = True  # Use GPU for generation if available
 
-    # --- Correction pour éviter la répétition du pattern ---
-    # Pour un terrain style Blockhead/Terraria, il faut :
-    # - Un SEED global unique (déjà fait)
-    # - Génération du terrain basée sur la Perlin noise 1D/2D sur les coordonnées mondiales (world_x, world_y)
-    # - PAS de seed unique par chunk, mais une variation suffisante dans la fonction de génération (voir map_generation.py)
-    def get_chunk_seed(global_seed, chunk_x, chunk_y):
-        # Terrain continu, style Terraria/Blockhead : seed global unique
-        return global_seed
+def get_chunk_seed(global_seed, chunk_x, chunk_y):
+    return global_seed
 
-    # --- Ajout : Conseils pour un terrain "Blockhead/Terraria" ---
-    # Pour obtenir un vrai style Blockhead/Terraria :
-    # 1. Dans world/map_generation.py, dans generate_chunk :
-    #    - Utilisez la Perlin noise 1D pour la hauteur du sol (surface), sur world_x.
-    #    - Ajoutez des plateaux, falaises, variations de hauteur, et des grottes (Perlin 2D sur world_x, world_y).
-    #    - Ajoutez des couches (herbe, terre, pierre, minerais) selon la profondeur.
-    #    - Ajoutez des arbres, lacs, biomes, etc.
-    # 2. Ne touchez pas au seed par chunk ici, gardez juste le seed global.
-    # 3. Inspirez-vous de la génération de terrain de Terraria : beaucoup de relief, des grottes, des surprises.
-    # 4. Pour de vrais biomes :
-    #    - Modifiez world/biomes.py pour ajouter plus de biomes variés (marais, jungle, savane, volcan, océan, etc).
-    #    - Dans get_biome(x, y, seed), utilisez la Perlin noise ou une autre noise pour choisir le biome selon la position (et pas juste x % ...).
-    #    - Chaque biome doit avoir ses propres paramètres : surface_block, base_height, height_variation, arbres, etc.
-    #    - Dans map_generation.py, appliquez les propriétés du biome courant pour chaque chunk/colonne.
-    #    - Ajoutez des transitions douces entre les biomes (par interpolation ou blending).
+def play_sound_effect(effect_name):
+    """Play a sound effect."""
+    pass
 
-    # --- Ajout : Biomes avancés pour un terrain "Blockhead/Terraria" ---
-    # Nécessite : world/biomes.py et world/map_generation.py adaptés
+def show_visual_effect(effect_name, position):
+    """Show a visual effect."""
+    pass
 
-    # Exemple d'intégration automatique de biomes variés avec transitions douces
-    # (Le code principal n'a pas besoin de changer, mais voici comment appeler la génération avancée)
+def display_notification(message, duration=2):
+    """Display a notification on the screen."""
+    pass
 
-    # Dans world/map_generation.py, assurez-vous d'utiliser la fonction get_biome avancée :
-    # from world.biomes import get_biome
+def display_help_overlay():
+    """Display help overlay with controls and tips."""
+    pass
 
-    # Dans generate_chunk, pour chaque colonne x du chunk :
-    #   world_x = chunk_x * config.CHUNK_SIZE + x
-    #   biome = get_biome(world_x, 0, seed)  # Utilise Perlin/simplex pour le choix du biome
-    #   Utilisez biome.surface_block, biome.base_height, biome.height_variation, etc.
+def close_all_interfaces():
+    """Close all active interfaces."""
+    global active_storage, inventory_open, machine_ui_open, crafting_ui_open  # Add UI state flags
+    if machine_system.get_active_machine() is not None:
+        machine_system.close_machine_ui()
+        machine_ui_open = False
+    if crafting_system.get_active_table() is not None:
+        crafting_system.close_table_ui()
+        crafting_ui_open = False
+    active_storage = None
+    inventory_open = False  # Close inventory as well
 
-    # Pour la transition douce entre biomes, faites une interpolation linéaire entre les paramètres
-    # de biome sur plusieurs colonnes (par exemple, sur 10-20 blocs).
+def quick_move_item(source, destination):
+    """Move item quickly between inventory and storage."""
+    pass
 
-    # Le code principal n'a pas besoin d'être modifié pour supporter les biomes avancés,
-    # il suffit de s'assurer que map_generation.py et biomes.py utilisent la logique ci-dessus.
+last_placement = None
 
-    # --- Priority Additions/Improvements ---
+def undo_last_placement():
+    """Undo the last block placement."""
+    global last_placement
+    if last_placement:
+        block_x, block_y, block_type = last_placement
+        set_block_at(block_x, block_y, config.EMPTY)
+        last_placement = None
+    else:
+        pass
 
-    # 1. Visual and Sound Feedback
-    def play_sound_effect(effect_name):
-        """Play a sound effect."""
-        # Placeholder for sound effect logic
-        print(f"Playing sound effect: {effect_name}")
+def display_durability(machine_or_tool):
+    """Display durability of a machine or tool."""
+    pass
 
-    def show_visual_effect(effect_name, position):
-        """Show a visual effect."""
-        # Placeholder for visual effect logic
-        print(f"Showing visual effect: {effect_name} at {position}")
+def render_mini_map():
+    """Render a mini-map of the explored area."""
+    pass
 
-    # 2. Error Messages and Notifications
-    def display_notification(message, duration=2):
-        """Display a notification on the screen."""
-        # Placeholder for notification logic
-        print(f"Notification: {message}")
+def auto_save():
+    """Automatically save the game at regular intervals."""
+    save_current_world()
 
-    # 3. Contextual Help/Tutorial
-    def display_help_overlay():
-        """Display help overlay with controls and tips."""
-        # Placeholder for help overlay logic
-        print("Displaying help overlay")
+def translate_text(text, language="en"):
+    """Translate text to the specified language."""
+    return text
 
-    # 4. Interface Management
-    def close_all_interfaces():
-        """Close all active interfaces."""
-        global active_storage
-        if machine_system.get_active_machine() is not None:
-            machine_system.close_machine_ui()
-        if crafting_system.get_active_table() is not None:
-            crafting_system.close_table_ui()
-        active_storage = None
-        print("All interfaces closed")
+def find_spawn_position():
+    """Finds a safe spawn position for the player above the ground."""
+    spawn_chunk_x, spawn_chunk_y = 0, 0
 
-    # 5. Inventory Improvements
-    def quick_move_item(source, destination):
-        """Move item quickly between inventory and storage."""
-        # Placeholder for quick move logic
-        print(f"Quickly moving item from {source} to {destination}")
+    ensure_origin_chunk_exists()
 
-    # 6. Undo Last Placement
-    last_placement = None
+    with chunk_lock:
+        if (spawn_chunk_x, spawn_chunk_y) not in loaded_chunks:
+            return 0, 0
+        chunk = loaded_chunks[(spawn_chunk_x, spawn_chunk_y)]
 
-    def undo_last_placement():
-        """Undo the last block placement."""
-        global last_placement
-        if last_placement:
-            block_x, block_y, block_type = last_placement
-            set_block_at(block_x, block_y, config.EMPTY)
-            last_placement = None
-            print(f"Undid placement of block type {block_type} at ({block_x}, {block_y})")
-        else:
-            print("No placement to undo")
+    try:
+        for y in range(config.CHUNK_SIZE):
+            for x in range(config.CHUNK_SIZE):
+                is_empty = chunk[y, x] == config.EMPTY
+                is_ground_below = False
+                if y < config.CHUNK_SIZE - 1:
+                    below_block_type = chunk[y + 1, x]
+                    is_ground_below = below_block_type in config.BLOCKS and config.BLOCKS[below_block_type]["solid"]
 
-    # 7. Machine/Tool Durability
-    def display_durability(machine_or_tool):
-        """Display durability of a machine or tool."""
-        # Placeholder for durability display logic
-        print(f"Displaying durability for {machine_or_tool}")
-
-    # 8. Mini-Map
-    def render_mini_map():
-        """Render a mini-map of the explored area."""
-        # Placeholder for mini-map rendering logic
-        print("Rendering mini-map")
-
-    # 9. Auto-Save
-    def auto_save():
-        """Automatically save the game at regular intervals."""
-        save_world_to_file(SAVE_FILE, storage_system, (player.x, player.y), conveyor_system, extractor_system, multi_block_system, auto_miner_system)
-        print("Game auto-saved")
-
-    # 10. Multi-Language Support
-    def translate_text(text, language="en"):
-        """Translate text to the specified language."""
-        # Placeholder for translation logic
-        return text
-
-    def find_spawn_position():
-        """Finds a safe spawn position for the player above the ground."""
-        spawn_chunk_x, spawn_chunk_y = 0, 0  # Start at the origin chunk
-
-        # Ensure the origin chunk exists using the dedicated function
-        ensure_origin_chunk_exists()  # This handles generation/loading if needed
-
-        # Now safely get the origin chunk
-        with chunk_lock:
-            # Check again in case ensure_origin_chunk_exists failed silently (though it shouldn't)
-            if (spawn_chunk_x, spawn_chunk_y) not in loaded_chunks:
-                print("CRITICAL ERROR: Origin chunk still missing after ensure_origin_chunk_exists!")
-                # Fallback emergency spawn
-                return 0, 0
-            chunk = loaded_chunks[(spawn_chunk_x, spawn_chunk_y)]
-
-        try:
-            # Find an empty space for spawning (using config constants)
-            for y in range(config.CHUNK_SIZE):
-                for x in range(config.CHUNK_SIZE):
-                    # Check for empty space with a solid block below
-                    is_empty = chunk[y, x] == config.EMPTY
-                    is_ground_below = False
-                    if y < config.CHUNK_SIZE - 1:
-                        below_block_type = chunk[y + 1, x]
-                        is_ground_below = below_block_type in config.BLOCKS and config.BLOCKS[below_block_type]["solid"]
-                    elif y == config.CHUNK_SIZE - 1:  # If at the bottom, check chunk below? More complex. Assume no spawn at bottom edge for now.
-                        pass
-
-                    if is_empty and is_ground_below:
-                        # Found empty space with ground beneath it
-                        # Return world coordinates
-                        return (spawn_chunk_x * config.CHUNK_SIZE + x) * config.PIXEL_SIZE, \
-                            (spawn_chunk_y * config.CHUNK_SIZE + y) * config.PIXEL_SIZE
-
-            # If no ideal spot is found, just use the highest empty space in the middle column
-            middle_x = config.CHUNK_SIZE // 2
-            for y in range(config.CHUNK_SIZE):
-                if chunk[y, middle_x] == config.EMPTY:
-                    print("No ideal spawn found, using highest empty block in middle column.")
-                    return (spawn_chunk_x * config.CHUNK_SIZE + middle_x) * config.PIXEL_SIZE, \
+                if is_empty and is_ground_below:
+                    return (spawn_chunk_x * config.CHUNK_SIZE + x) * config.PIXEL_SIZE, \
                         (spawn_chunk_y * config.CHUNK_SIZE + y) * config.PIXEL_SIZE
 
-            # If no empty space at all (highly unlikely), create one at the top center
-            print("No empty space found in origin chunk, creating one at top center")
-            middle_x = config.CHUNK_SIZE // 2
-            with chunk_lock:  # Need lock to modify chunk data
-                chunk[0, middle_x] = config.EMPTY
-                modified_chunks.add((spawn_chunk_x, spawn_chunk_y))  # Mark modified
-            return (spawn_chunk_x * config.CHUNK_SIZE + middle_x) * config.PIXEL_SIZE, \
-                (spawn_chunk_y * config.CHUNK_SIZE + 0) * config.PIXEL_SIZE
+        middle_x = config.CHUNK_SIZE // 2
+        for y in range(config.CHUNK_SIZE):
+            if chunk[y, middle_x] == config.EMPTY:
+                return (spawn_chunk_x * config.CHUNK_SIZE + middle_x) * config.PIXEL_SIZE, \
+                    (spawn_chunk_y * config.CHUNK_SIZE + y) * config.PIXEL_SIZE
 
-        except Exception as e:
-            # Last resort emergency spawn
-            print(f"EMERGENCY: Error in finding spawn position: {e}")
-            traceback.print_exc()
-            print("Using emergency world origin spawn at (0,0)")
-            return 0, 0
+        middle_x = config.CHUNK_SIZE // 2
+        with chunk_lock:
+            chunk[0, middle_x] = config.EMPTY
+            modified_chunks.add((spawn_chunk_x, spawn_chunk_y))
+        return (spawn_chunk_x * config.CHUNK_SIZE + middle_x) * config.PIXEL_SIZE, \
+            (spawn_chunk_y * config.CHUNK_SIZE + 0) * config.PIXEL_SIZE
 
-    def check_collision(px, py, move_x, move_y):
-        """Check for collisions between player and blocks."""
-        if not player.collision_enabled:
-            return False
+    except Exception:
+        return 0, 0
+
+def check_collision(px, py, move_x, move_y):
+    """Check for collisions between player and blocks."""
+    if not player.collision_enabled:
+        return False
+    
+    player_rect = pygame.Rect(px, py, player.width, player.height)
+    new_player_rect = player_rect.move(move_x, move_y)
+    
+    for x in range(new_player_rect.left // config.PIXEL_SIZE, (new_player_rect.right // config.PIXEL_SIZE) + 1):
+        for y in range(new_player_rect.top // config.PIXEL_SIZE, (new_player_rect.bottom // config.PIXEL_SIZE) + 1):
+            block_type = get_block_at(x, y)
+            if block_type in config.BLOCKS and config.BLOCKS[block_type]["solid"]:
+                block_rect = pygame.Rect(x * config.PIXEL_SIZE, y * config.PIXEL_SIZE, 
+                                        config.PIXEL_SIZE, config.PIXEL_SIZE)
+                if new_player_rect.colliderect(block_rect):
+                    return True
         
-        # Calculate player rectangle at new position
-        player_rect = pygame.Rect(px, py, player.width, player.height)
-        new_player_rect = player_rect.move(move_x, move_y)
-        
-        # Check for collisions with solid blocks
-        for x in range(new_player_rect.left // config.PIXEL_SIZE, (new_player_rect.right // config.PIXEL_SIZE) + 1):
-            for y in range(new_player_rect.top // config.PIXEL_SIZE, (new_player_rect.bottom // config.PIXEL_SIZE) + 1):
-                block_type = get_block_at(x, y)
-                if block_type in config.BLOCKS and config.BLOCKS[block_type]["solid"]:
-                    block_rect = pygame.Rect(x * config.PIXEL_SIZE, y * config.PIXEL_SIZE, 
-                                            config.PIXEL_SIZE, config.PIXEL_SIZE)
-                    if new_player_rect.colliderect(block_rect):
-                        return True  # Collision detected
-        
-        return False  # No collision detected
+    return False
 
-    def handle_mining(dt, mouse_x, mouse_y, player_x, player_y, camera_x, camera_y):
-        """Handle mining action when the player is using the laser."""
-        laser_points = []
-        # Calculate world PIXEL position
-        world_pixel_x = mouse_x + camera_x
-        world_pixel_y = mouse_y + camera_y
+def handle_mining(dt, mouse_x, mouse_y, player_x, player_y, camera_x, camera_y):
+    """Handle mining action when the player is using the laser."""
+    laser_points = []
+    world_pixel_x = mouse_x + camera_x
+    world_pixel_y = mouse_y + camera_y
 
-        # Calculate direction vector from player (center) to mouse pixel position
-        player_center_x = player_x + player.width / 2
-        player_center_y = player_y + player.height / 2
-        direction_x = world_pixel_x - player_center_x
-        direction_y = world_pixel_y - player_center_y
-        distance = math.hypot(direction_x, direction_y) # Use math.hypot for distance
-        if distance == 0: distance = 1
+    player_center_x = player_x + player.width / 2
+    player_center_y = player_y + player.height / 2
+    direction_x = world_pixel_x - player_center_x
+    direction_y = world_pixel_y - player_center_y
+    distance = math.hypot(direction_x, direction_y)
+    if distance == 0: distance = 1
 
-        # Normalize the direction vector
-        norm_direction_x = direction_x / distance
-        norm_direction_y = direction_y / distance
+    norm_direction_x = direction_x / distance
+    norm_direction_y = direction_y / distance
 
-        # Laser range (in pixels) - adjust if needed
-        laser_range_pixels = 15 * config.PIXEL_SIZE
+    laser_range_pixels = 15 * config.PIXEL_SIZE
 
-        # Step along the laser direction in small increments
-        step_size = config.PIXEL_SIZE / 4 # Check more frequently along the ray
-        for i in range(int(laser_range_pixels / step_size)):
-            current_pixel_x = player_center_x + norm_direction_x * i * step_size
-            current_pixel_y = player_center_y + norm_direction_y * i * step_size
+    step_size = config.PIXEL_SIZE / 4
+    for i in range(int(laser_range_pixels / step_size)):
+        current_pixel_x = player_center_x + norm_direction_x * i * step_size
+        current_pixel_y = player_center_y + norm_direction_y * i * step_size
 
-            # Convert current pixel position to world BLOCK coordinates
-            dig_block_x = int(current_pixel_x // config.PIXEL_SIZE)
-            dig_block_y = int(current_pixel_y // config.PIXEL_SIZE)
+        dig_block_x = int(current_pixel_x // config.PIXEL_SIZE)
+        dig_block_y = int(current_pixel_y // config.PIXEL_SIZE)
 
-            # Check if dig position has a block using world BLOCK coordinates
-            block_type = get_block_at(dig_block_x, dig_block_y) # Use block coords
+        block_type = get_block_at(dig_block_x, dig_block_y)
 
-            if block_type != config.EMPTY:
-                # Use world BLOCK coordinates for mining progress keys
-                block_index = (dig_block_x, dig_block_y) # Switched to (x, y) for consistency
+        if block_type != config.EMPTY:
+            block_index = (dig_block_x, dig_block_y)
 
-                # Get block hardness
-                if block_type in config.BLOCKS:
-                    hardness = config.BLOCKS[block_type].get("hardness", 1)
-                    if hardness < 0:  # Unbreakable
-                        break
+            if block_type in config.BLOCKS:
+                hardness = config.BLOCKS[block_type].get("hardness", 1)
+                if hardness < 0:
+                    break
+            else:
+                break
+
+            if block_index not in mining_progress:
+                mining_progress[block_index] = 0
+                mining_animation[block_index] = 0
+
+            mining_progress[block_index] += dt / hardness
+            mining_animation[block_index] = min(mining_progress[block_index], 1)
+
+            if mining_progress[block_index] >= 1:
+                original_block_type = block_type
+
+                dropped_block = config.EMPTY
+                drop_data = config.BLOCKS.get(original_block_type, {}).get("drops")
+                if drop_data:
+                    for drop_id_str, probability in drop_data.items():
+                        try: drop_id = int(drop_id_str)
+                        except ValueError: continue
+                        if drop_id in config.BLOCKS and random.random() < probability:
+                            dropped_block = drop_id
+                            break
                 else:
-                    # print(f"Warning: Block type {block_type} not found in config.BLOCKS")
-                    break # Skip if block type is not in BLOCKS
+                    if hardness >= 0:
+                        dropped_block = original_block_type
 
-                # Initialize mining progress if it doesn't exist
-                if block_index not in mining_progress:
-                    mining_progress[block_index] = 0
-                    mining_animation[block_index] = 0  # Initialize animation progress
+                added_to_inventory = False
+                if dropped_block != config.EMPTY:
+                    if inventory.add_item(dropped_block):
+                        added_to_inventory = True
 
-                # Increase mining progress based on hardness and delta time
-                mining_progress[block_index] += dt / hardness
-                mining_animation[block_index] = min(mining_progress[block_index], 1)  # Clamp animation progress
+                if set_block_at(dig_block_x, dig_block_y, config.EMPTY):
+                    if original_block_type == config.STORAGE_CHEST:
+                        storage_system.unregister_storage(dig_block_x, dig_block_y)
+                        multi_block_system.unregister_multi_block(dig_block_x, dig_block_y)
+                    elif original_block_type == config.CRAFTING_TABLE:
+                        crafting_system.unregister_table(dig_block_x, dig_block_y)
+                    elif original_block_type == config.ORE_PROCESSOR:
+                        machine_system.unregister_machine(dig_block_x, dig_block_y)
+                        multi_block_system.unregister_multi_block(dig_block_x, dig_block_y)
+                    elif original_block_type == config.CONVEYOR_BELT or original_block_type == config.VERTICAL_CONVEYOR:
+                        conveyor_system.unregister_conveyor(dig_block_x, dig_block_y)
+                        multi_block_system.unregister_multi_block(dig_block_x, dig_block_y)
+                    elif original_block_type == config.ITEM_EXTRACTOR:
+                        extractor_system.unregister_extractor(dig_block_x, dig_block_y)
+                        multi_block_system.unregister_multi_block(dig_block_x, dig_block_y)
+                    elif original_block_type == config.AUTO_MINER:
+                        auto_miner_system.unregister_miner(dig_block_x, dig_block_y)
 
-                # If mining is complete, generate drops
-                if mining_progress[block_index] >= 1:
-                    original_block_type = block_type  # Store before setting to EMPTY
+                mining_progress.pop(block_index, None)
+                mining_animation.pop(block_index, None)
 
-                    # --- Determine Drop ---
-                    dropped_block = config.EMPTY # Default to empty
-                    drop_data = config.BLOCKS.get(original_block_type, {}).get("drops")
-                    if drop_data:
-                        # Simple drop logic: check probabilities
-                        for drop_id_str, probability in drop_data.items():
-                            try: drop_id = int(drop_id_str)
-                            except ValueError: continue
-                            if drop_id in config.BLOCKS and random.random() < probability:
-                                dropped_block = drop_id
-                                break # Take first successful drop based on probability
-                    else: # Default drop is the block itself if no drops defined (and not unbreakable)
-                        if hardness >= 0:
-                            dropped_block = original_block_type
+            laser_points.append((current_pixel_x - camera_x, current_pixel_y - camera_y))
+            break
 
-                    # --- Add to Inventory & Update World ---
-                    added_to_inventory = False
-                    if dropped_block != config.EMPTY:
-                        if inventory.add_item(dropped_block):
-                            added_to_inventory = True
-                        # else: Inventory full, item lost for now
+    return laser_points
 
-                    # Set block to empty using world BLOCK coordinates
-                    if set_block_at(dig_block_x, dig_block_y, config.EMPTY): # Use block coords
-                        # --- Unregister Systems if block was special ---
-                        # (No changes needed here, functions already take block coords)
-                        if original_block_type == config.STORAGE_CHEST:
-                            storage_system.unregister_storage(dig_block_x, dig_block_y)
-                            multi_block_system.unregister_multi_block(dig_block_x, dig_block_y)
-                        elif original_block_type == config.CRAFTING_TABLE:
-                            crafting_system.unregister_table(dig_block_x, dig_block_y)
-                        elif original_block_type == config.ORE_PROCESSOR:
-                            machine_system.unregister_machine(dig_block_x, dig_block_y)
-                            multi_block_system.unregister_multi_block(dig_block_x, dig_block_y)
-                        elif original_block_type == config.CONVEYOR_BELT or original_block_type == config.VERTICAL_CONVEYOR:
-                            conveyor_system.unregister_conveyor(dig_block_x, dig_block_y)
-                            multi_block_system.unregister_multi_block(dig_block_x, dig_block_y)
-                        elif original_block_type == config.ITEM_EXTRACTOR:
-                            extractor_system.unregister_extractor(dig_block_x, dig_block_y)
-                            multi_block_system.unregister_multi_block(dig_block_x, dig_block_y)
-                        elif original_block_type == config.AUTO_MINER:
-                            auto_miner_system.unregister_miner(dig_block_x, dig_block_y)
-                            # multi_block_system.unregister_multi_block(dig_block_x, dig_block_y) # If it was registered
+def initialize_game(save_name=None):
+    """Initializes game state, loading from save or creating a new world."""
+    global player, camera_x, camera_y, SEED, CURRENT_SAVE_FILE_NAME, rendered_chunk_cache
+    global player_start_pos, inventory, machine_system, crafting_system, storage_system
+    global conveyor_system, extractor_system, multi_block_system, auto_miner_system
+    global mining_progress, mining_animation, time_of_day
 
-                    # Remove progress tracking
-                    mining_progress.pop(block_index, None)
-                    mining_animation.pop(block_index, None) # Also remove animation progress
+    print(f"Initializing game. Save name: {save_name}")
 
-                # Add laser point for drawing (using pixel coordinates)
-                laser_points.append((current_pixel_x - camera_x, current_pixel_y - camera_y))
-                break # Stop laser at first block hit
+    # Clear existing state before loading/creating
+    with chunk_lock:
+        loaded_chunks.clear()
+        modified_chunks.clear()
+        generating_chunks.clear()
+        initial_save_chunks.clear()
+    rendered_chunk_cache.clear()
+    storage_system.storages.clear()
+    conveyor_system.conveyors.clear()
+    conveyor_system.items_on_conveyors.clear()
+    extractor_system.extractors.clear()
+    multi_block_system.multi_block_origins.clear()
+    multi_block_system.multi_block_structures.clear()
+    auto_miner_system.miners.clear()
+    machine_system.machines.clear() # Assuming MachineSystem has a 'machines' dict
+    crafting_system.tables.clear() # Assuming CraftingSystem has a 'tables' dict
+    inventory.items = [None] * inventory.size # Reset inventory
 
-        return laser_points
+    mining_progress = {}
+    mining_animation = {}
+    time_of_day = 0.3 # Reset time
 
-    # Initialize Pygame
-    pygame.init()
+    CURRENT_SAVE_FILE_NAME = save_name
+    save_file_path = os.path.join(SAVES_DIR, save_name) if save_name else None
 
-    # Get current screen dimensions
-    try:
-        display_info = pygame.display.Info()
-        screen_width = display_info.current_w
-        screen_height = display_info.current_h
-        print(f"Detected screen size: {screen_width}x{screen_height}")
-    except pygame.error as e:
-        print(f"Could not get display info: {e}. Using default size.")
-        screen_width = 1200  # Default width
-        screen_height = 1000 # Default height
-
-    # Set display mode using detected or default size, make it resizable
-    screen = pygame.display.set_mode((screen_width, screen_height), pygame.RESIZABLE)
-    pygame.display.set_caption(config.WINDOW_TITLE)
-    clock = pygame.time.Clock()
-    fps_font = pygame.font.SysFont("Consolas", 18)
-
-    # Create block surfaces
-    block_surfaces = create_block_surfaces()
-
-    # Test rendering of block surfaces
-    for block_id, surface in block_surfaces.items():
-        if surface.get_alpha() is None:
-            print(f"Block ID {block_id} has no alpha channel.")
-        else:
-            print(f"Block ID {block_id} rendered successfully.")
-
-    # Initialize systems
-    # Create MultiBlockSystem before others that depend on it
-    multi_block_system = MultiBlockSystem(get_block_at, set_block_at)
-
-    # Initialize the machine system
-    machine_system = MachineSystem(get_block_at, set_block_at)
-
-    # Initialize machine UI (after screen size is determined)
-    machine_ui = MachineUI(screen_width, screen_height, block_surfaces)
-
-    # Initialize crafting system and UI (after screen size is determined)
-    crafting_system = CraftingSystem(get_block_at, set_block_at)
-    crafting_ui = CraftingUI(screen_width, screen_height, block_surfaces)
-
-    # Initialize storage and conveyor systems with multi-block awareness
-    storage_system = StorageSystem(get_block_at, set_block_at, multi_block_system)
-    conveyor_system = ConveyorSystem(get_block_at, set_block_at, multi_block_system)
-    storage_ui = StorageUI(screen_width, screen_height, block_surfaces) # Pass screen size
-
-    # Initialize extractor system to move items
-    extractor_system = ExtractorSystem(
-        get_block_at, set_block_at, storage_system, conveyor_system, multi_block_system
-    )
-
-    # Initialize AutoMiner system
-    auto_miner_system = AutoMinerSystem(get_block_at, set_block_at, storage_system)  # Initialize
-
-    # Initialize inventory
-    inventory = Inventory()
-
-    # Add these variables to track UI state
-    active_storage = None
-
-    # Add conveyor placement variables
-    conveyor_placement_active = False
-    conveyor_placement_mode = 0  # 0=ligne droite, 1=diagonale, 2=zigzag
-    conveyor_placement_direction = 0  # 0=droite, 1=bas, 2=gauche, 3=haut
-    conveyor_placement_preview = []  # Liste des positions de prévisualisation
-
-    # Set random seed for world generation
-    random.seed(SEED)
-    np.random.seed(SEED)
-
-
-    # Start chunk generation worker threads
-    chunk_workers = start_chunk_workers(CHUNK_GEN_THREAD_COUNT, SEED)
-
-    # Initialize game state
-    player_start_pos = (0, 0)  # Default player start position
-    if os.path.exists(SAVE_FILE):
-        print(f"Save file found: {SAVE_FILE}")
-        # load_world_from_file now returns success status and player position
-        success, player_start_pos = load_world_from_file(SAVE_FILE, storage_system, conveyor_system, extractor_system, multi_block_system, auto_miner_system)
+    if save_name and os.path.exists(save_file_path):
+        print(f"Loading world from: {save_file_path}")
+        success, player_start_pos = load_world_from_file(save_file_path, storage_system, rendered_chunk_cache, conveyor_system, extractor_system, multi_block_system, auto_miner_system)
         if success:
-            print(f"Successfully loaded {len(loaded_chunks)} chunks from save file.")
-            # Ensure the seed from the loaded world is used for new chunks
-            SEED = config.SEED  # Update local SEED variable if config.SEED was changed by load_world
+            SEED = config.SEED # SEED is loaded from the file via config by load_world_from_file
+            print(f"Successfully loaded world. Seed: {SEED}")
+            player = Player(player_start_pos[0], player_start_pos[1])
+            camera_x = player.x - screen_width // 2
+            camera_y = player.y - screen_height // 2
         else:
-            print("Failed to load world from save file, generating new world.")
-            # Clear any partially loaded state
-            with chunk_lock:
-                loaded_chunks.clear()
-                modified_chunks.clear()
-                generating_chunks.clear()
-            # Reset other systems if needed
-            storage_system.storages.clear()
-            conveyor_system.conveyors.clear()
-            conveyor_system.items_on_conveyors.clear()
-            extractor_system.extractors.clear()
-            multi_block_system.multi_block_origins.clear()
-            multi_block_system.multi_block_structures.clear()
-            auto_miner_system.miners.clear()  # Clear miners on failed load
-            # Set seed for new world
+            print(f"Failed to load {save_file_path}, creating a new world with this name.")
+            # Fallback to creating a new world if load fails
+            SEED = int(time.time()) # Use a new seed
+            config.SEED = SEED
             random.seed(SEED)
             np.random.seed(SEED)
-            config.SEED = SEED  # Ensure config has the correct seed
-            ensure_origin_chunk_exists()  # Make sure origin exists for a new world
-            player_start_pos = find_spawn_position()  # Find spawn for new world
+            ensure_origin_chunk_exists()
+            player_start_pos = find_spawn_position()
+            player = Player(player_start_pos[0], player_start_pos[1])
+            camera_x = player.x - screen_width // 2
+            camera_y = player.y - screen_height // 2
+            save_current_world()
     else:
-        print(f"No save file found at {SAVE_FILE}, generating new world.")
-        # Set seed for new world
+        if save_name:
+            print(f"Save file {save_file_path} not found or specified name invalid. Creating new world: {save_name}")
+        else:
+            print("No save name provided. Creating new default world.")
+            # Generate a default name if none provided (e.g., for quick start)
+            save_name = f"world_{int(time.time())}.json"
+            CURRENT_SAVE_FILE_NAME = save_name
+            print(f"Generated save name: {CURRENT_SAVE_FILE_NAME}")
+
+        # Create a new world
+        SEED = int(time.time()) # Use a new seed
+        config.SEED = SEED
         random.seed(SEED)
         np.random.seed(SEED)
-        config.SEED = SEED  # Ensure config has the correct seed
-        ensure_origin_chunk_exists()  # Generate origin chunk for the new world
-        player_start_pos = find_spawn_position()  # Find spawn for new world
+        ensure_origin_chunk_exists()
+        player_start_pos = find_spawn_position()
+        player = Player(player_start_pos[0], player_start_pos[1])
+        camera_x = player.x - screen_width // 2
+        camera_y = player.y - screen_height // 2
+        save_current_world() # Save the newly created world immediately
 
-    # Explicitly verify that chunks are loaded correctly after load/new world gen
-    with chunk_lock:
-        print(f"Total loaded chunks after init: {len(loaded_chunks)}")
-        if (0, 0) not in loaded_chunks:
-            print("CRITICAL WARNING: Origin chunk (0,0) is NOT loaded after initialization!")
-        else:
-            print("Origin chunk (0,0) is loaded.")
-            # Debug: Print empty (cave) block density in the origin chunk to assess cave network generation
-            origin_chunk = loaded_chunks[(0,0)]
-            empty_count = np.count_nonzero(origin_chunk == config.EMPTY)
-            total_blocks = origin_chunk.size
-            print(f"Origin chunk cave density: {empty_count}/{total_blocks} empty blocks")
+    # Ensure initial chunks are loaded around the player
+    ensure_chunks_around_point(player.x, player.y, CHUNK_LOAD_RADIUS + 2)
+    print("Game initialization complete.")
 
-    # Get initial player position from loaded save or new world spawn
-    player_x, player_y = player_start_pos
-    player = Player(player_x, player_y)
 
-    # Initialize camera position
-    camera_x = player_x - screen_width // 2
-    camera_y = player_y - screen_height // 2
+def save_current_world():
+    """Saves the current game state to the currently loaded save file."""
+    if CURRENT_SAVE_FILE_NAME:
+        save_file_path = os.path.join(SAVES_DIR, CURRENT_SAVE_FILE_NAME)
+        print(f"Saving world to {save_file_path}...")
+        save_world_to_file(save_file_path, storage_system, (player.x, player.y), conveyor_system, extractor_system, multi_block_system, auto_miner_system)
+    else:
+        print("Error: Cannot save world, no save file name is set.")
 
-    # Initialize mining tracking
-    mining_progress = {}  # Dictionary to track mining progress for each block
-    mining_animation = {}  # Dictionary to store mining animation progress
+pygame.init()
 
-    # Queue initial chunks around the player for background loading
-    print("Queueing initial chunks around player...")
-    ensure_chunks_around_point(player.x, player.y, CHUNK_LOAD_RADIUS + 2)  # Queue a slightly larger area initially
-    print(f"Initial queue size: {chunk_generation_queue.qsize()} chunks.")
+try:
+    display_info = pygame.display.Info()
+    screen_width = display_info.current_w
+    screen_height = display_info.current_h
+except pygame.error:
+    screen_width = 1200
+    screen_height = 1000
 
-    # Initialize time of day (Terraria-style day/night cycle)
-    time_of_day = 0.3  # Start at morning
-    DAY_LENGTH = 60.0  # 10 real minutes = 1 full day/night cycle
+screen = pygame.display.set_mode((screen_width, screen_height), pygame.RESIZABLE)
+pygame.display.set_caption(config.WINDOW_TITLE)
+clock = pygame.time.Clock()
+fps_font = pygame.font.SysFont("Consolas", 18)
 
-    # Generate background layers
-    background_width = screen_width * 3
-    background_height = screen_height
+block_surfaces = create_block_surfaces()
+
+multi_block_system = MultiBlockSystem(get_block_at, set_block_at)
+
+machine_system = MachineSystem(get_block_at, set_block_at)
+
+machine_ui = MachineUI(screen_width, screen_height, block_surfaces)
+
+crafting_system = CraftingSystem(get_block_at, set_block_at)
+crafting_ui = CraftingUI(screen_width, screen_height, block_surfaces)
+
+storage_system = StorageSystem(get_block_at, set_block_at, multi_block_system)
+conveyor_system = ConveyorSystem(get_block_at, set_block_at, multi_block_system)
+storage_ui = StorageUI(screen_width, screen_height, block_surfaces)
+
+extractor_system = ExtractorSystem(
+    get_block_at, set_block_at, storage_system, conveyor_system, multi_block_system
+)
+
+auto_miner_system = AutoMinerSystem(get_block_at, set_block_at, storage_system)
+
+inventory = Inventory()
+
+active_storage = None
+
+conveyor_placement_active = False
+conveyor_placement_mode = 0
+conveyor_placement_direction = 0
+conveyor_placement_preview = []
+
+chunk_workers = start_chunk_workers(CHUNK_GEN_THREAD_COUNT, int(time.time()))
+
+rendered_chunk_cache = {}
+
+player_start_pos = (0, 0)
+player = None
+camera_x, camera_y = 0, 0
+
+time_of_day = 0.3
+DAY_LENGTH = 60.0
+
+background_width = screen_width * 3
+background_height = screen_height
+cloud_layer = None
+hill_layers = None
+star_layer = None
+
+def initialize_background():
+    """Generates background layers based on the current SEED."""
+    global cloud_layer, hill_layers, star_layer
+    print(f"Initializing background with seed: {SEED}")
     cloud_layer = generate_clouds(background_width, background_height, SEED)
     hill_layers = generate_hills(background_width, background_height, 2, SEED)
     star_layer = generate_stars(background_width, background_height, SEED)
 
-    # Check for GPU at startup
-    if USE_GPU_GENERATION:
-        if detect_gpu():
-            print("GPU détecté et activé pour la génération de terrain!")
-        else:
-            print("Aucun GPU compatible détecté, utilisation du CPU pour la génération.")
-            USE_GPU_GENERATION = False
+if USE_GPU_GENERATION:
+    if not detect_gpu():
+        USE_GPU_GENERATION = False
 
-    # Initialize main menu (after screen size is determined)
-    main_menu = MainMenu(screen_width, screen_height)
+main_menu = MainMenu(screen_width, screen_height, SAVES_DIR)
 
-    # --- Rendering Functions ---
+def render_visible_chunks(screen, camera_x, camera_y, active_chunks, loaded_chunks, block_surfaces, machine_system):
+    """Render only the visible chunks to improve performance."""
+    with chunk_lock:
+        for chunk_x, chunk_y in active_chunks:
+            chunk_coord = (chunk_x, chunk_y)
+            if chunk_coord in loaded_chunks:
+                # Check if chunk needs re-rendering (modified or not in cache)
+                needs_render = chunk_coord in modified_chunks or chunk_coord not in rendered_chunk_cache
 
-    def render_visible_chunks(screen, camera_x, camera_y, active_chunks, loaded_chunks, block_surfaces, machine_system):
-        """Render only the visible chunks to improve performance."""
-        rendered_chunk_surfaces = {}
-        with chunk_lock: # Access loaded_chunks safely
-            for chunk_x, chunk_y in active_chunks:
-                if (chunk_x, chunk_y) in loaded_chunks:
-                    chunk_data = loaded_chunks[(chunk_x, chunk_y)]
-                    rendered_chunk_surfaces[(chunk_x, chunk_y)] = render_chunk(
+                if needs_render:
+                    chunk_data = loaded_chunks[chunk_coord]
+                    # Render the chunk surface
+                    new_surface = render_chunk(
                         chunk_data, chunk_x, chunk_y, camera_x, camera_y,
                         mining_animation, block_surfaces, machine_system,
                         multi_block_system
                     )
+                    # Store in cache and remove from modified set
+                    rendered_chunk_cache[chunk_coord] = new_surface
+                    modified_chunks.discard(chunk_coord) # Remove after rendering
 
-        for (chunk_x, chunk_y), surface in rendered_chunk_surfaces.items():
-            chunk_screen_x = chunk_x * config.CHUNK_SIZE * config.PIXEL_SIZE - camera_x
-            chunk_screen_y = chunk_y * config.CHUNK_SIZE * config.PIXEL_SIZE - camera_y
-            screen.blit(surface, (chunk_screen_x, chunk_screen_y))
+                # Get the surface (either newly rendered or from cache)
+                surface_to_blit = rendered_chunk_cache.get(chunk_coord)
 
-    def render_debug_chunks(screen, camera_x, camera_y, active_chunks):
-        """Render chunk borders for debugging purposes."""
-        for chunk_x, chunk_y in active_chunks:
-            chunk_screen_x = chunk_x * config.CHUNK_SIZE * config.PIXEL_SIZE - camera_x
-            chunk_screen_y = chunk_y * config.CHUNK_SIZE * config.PIXEL_SIZE - camera_y
-            chunk_rect = pygame.Rect(chunk_screen_x, chunk_screen_y,
-                                    config.CHUNK_SIZE * config.PIXEL_SIZE,
-                                    config.CHUNK_SIZE * config.PIXEL_SIZE)
-            pygame.draw.rect(screen, (0, 255, 0), chunk_rect, 1)  # Green border for chunks
+                if surface_to_blit:
+                    # Calculate screen position and blit
+                    chunk_screen_x = chunk_x * config.CHUNK_SIZE * config.PIXEL_SIZE - camera_x
+                    chunk_screen_y = chunk_y * config.CHUNK_SIZE * config.PIXEL_SIZE - camera_y
+                    screen.blit(surface_to_blit, (chunk_screen_x, chunk_screen_y))
 
-    print("=== About to enter main loop block ===")  # Add this before the main loop
+def render_debug_chunks(screen, camera_x, camera_y, active_chunks):
+    """Render chunk borders for debugging purposes."""
+    for chunk_x, chunk_y in active_chunks:
+        chunk_screen_x = chunk_x * config.CHUNK_SIZE * config.PIXEL_SIZE - camera_x
+        chunk_screen_y = chunk_y * config.CHUNK_SIZE * config.PIXEL_SIZE - camera_y
+        chunk_rect = pygame.Rect(chunk_screen_x, chunk_screen_y,
+                                config.CHUNK_SIZE * config.PIXEL_SIZE,
+                                config.CHUNK_SIZE * config.PIXEL_SIZE)
+        pygame.draw.rect(screen, (0, 255, 0), chunk_rect, 1)
 
-    # Main Game Loop
-    if __name__ == '__main__':
-        print("=== ENTERING MAIN GAME LOOP ===")  # Debug print
-        try:
-            running = True
-            in_menu = True  # Start in the main menu
+if __name__ == '__main__':
+    running = True
+    in_menu = True
+    game_initialized = False # Track if the game world is ready
+    last_time = time.time()
 
-            while running:
-                if in_menu:
-                    # Handle main menu
-                    for event in pygame.event.get():
-                        if event.type == pygame.QUIT:
-                            running = False
-                        elif event.type == pygame.VIDEORESIZE: # Handle resize in menu too
-                            screen_width, screen_height = event.size
-                            screen = pygame.display.set_mode((screen_width, screen_height), pygame.RESIZABLE)
-                            main_menu.update_screen_size(screen_width, screen_height) # Update menu size
-                        else:
-                            action = main_menu.handle_input(event)
-                            if action == "Start Game":
-                                in_menu = False  # Exit menu and start the game
-                                # Ensure game UIs are updated to current screen size when starting
-                                machine_ui.update_screen_size(screen_width, screen_height)
-                                crafting_ui.update_screen_size(screen_width, screen_height)
-                                storage_ui.update_screen_size(screen_width, screen_height)
-                            elif action == "Open Settings": # Handle the new action
-                                print("Settings button clicked! (Implement settings screen here)")
-                                # Placeholder: Currently does nothing but print.
-                                # You would typically set a new state like 'in_settings_menu = True'
-                                # and handle that state similar to 'in_menu'.
-                            elif action == "Quit":
-                                running = False
+    # UI State Flags
+    inventory_open = False
+    machine_ui_open = False
+    crafting_ui_open = False
+    storage_ui_open = False # Assuming you might add this later
 
-                    # Draw main menu
-                    main_menu.draw(screen)
-                    pygame.display.flip()
-                    clock.tick(config.FPS_CAP)
+    # Placement State
+    placement_rotation = 0 # 0: Right, 1: Down, 2: Left, 3: Up (for rotatable blocks)
+    placement_conveyor_mode = 0 # 0: Horizontal, 1: Vertical (for conveyors)
+
+    # configure yappi if debugging
+    if DEBUG_MODE:
+        yappi.set_clock_type("cpu")
+
+    while running:
+        if in_menu:
+            game_initialized = False # Reset flag when returning to menu
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    running = False
+                elif event.type == pygame.VIDEORESIZE:
+                    screen_width, screen_height = event.size
+                    screen = pygame.display.set_mode((screen_width, screen_height), pygame.RESIZABLE)
+                    main_menu.update_screen_size(screen_width, screen_height)
                 else:
-                    profiler = cProfile.Profile()
-                    profiler.enable()
-                    last_time = time.time()
-                    
-                    # For laser drawing
-                    laser_active = False
-                    laser_points = []
+                    action = main_menu.handle_input(event)
+                    if isinstance(action, tuple): # Check if action is a tuple (type, value)
+                        action_type, value = action
+                        if action_type == "load_game":
+                            print(f"Menu action: Load Game '{value}'")
+                            initialize_game(save_name=value)
+                            initialize_background() # Init background with loaded seed
+                            in_menu = False
+                            game_initialized = True
+                            last_time = time.time() # Reset dt timer
+                            # --- Start Profiler on Game Start ---
+                            if DEBUG_MODE: yappi.start()
+                        elif action_type == "new_game":
+                            print(f"Menu action: New Game '{value}'")
+                            initialize_game(save_name=value) # Create new world with name
+                            initialize_background() # Init background with new seed
+                            in_menu = False
+                            game_initialized = True
+                            last_time = time.time() # Reset dt timer
+                            # --- Start Profiler on Game Start ---
+                            if DEBUG_MODE: yappi.start()
+                        elif action_type == "delete_game":
+                            try:
+                                file_to_delete = os.path.join(SAVES_DIR, value)
+                                if os.path.exists(file_to_delete):
+                                    print(f"Deleting save: {file_to_delete}")
+                                    os.remove(file_to_delete)
+                                    main_menu.scan_saves() # Refresh save list in menu
+                                else:
+                                    print(f"Save file not found for deletion: {file_to_delete}")
+                            except Exception as e:
+                                print(f"Error deleting save file {value}: {e}")
 
-                    while running:
-                        # Calculate delta time
-                        current_time = time.time()
-                        dt = current_time - last_time
-                        if dt == 0:
-                            dt = 1 / config.FPS_CAP  # Avoid division by zero
-                        last_time = current_time
-                        
-                        # Handle events
-                        for event in pygame.event.get():
-                            if event.type == pygame.QUIT:
-                                save_world_to_file(SAVE_FILE, storage_system, (player.x, player.y), conveyor_system, extractor_system, multi_block_system, auto_miner_system)
-                                running = False
-                            
-                            elif event.type == pygame.KEYDOWN:
-                                if event.key == pygame.K_o:  # Press 'O' to manually save the map
-                                    save_world_to_file(SAVE_FILE, storage_system, (player.x, player.y), conveyor_system, extractor_system, multi_block_system, auto_miner_system)
-                                elif event.key == pygame.K_l:  # Press 'L' to manually load the map
-                                    success, loaded_player_pos = load_world_from_file(SAVE_FILE, storage_system, conveyor_system, extractor_system, multi_block_system, auto_miner_system)
-                                    if success:
-                                        player.x, player.y = loaded_player_pos
-                                        camera_x = player.x - screen_width // 2
-                                        camera_y = player.y - screen_height // 2
-                                        print("World reloaded.")
+                    elif action == "Quit":
+                        running = False
+
+            main_menu.draw(screen)
+            pygame.display.flip()
+            clock.tick(config.FPS_CAP)
+        elif game_initialized: # Only run game logic if initialized
+            # --- Game Loop Logic ---
+            laser_active = False
+            laser_points = []
+            # compute current mouse block coordinates for interactions and placement
+            mouse_x, mouse_y = pygame.mouse.get_pos()
+            mouse_block_x = (mouse_x + camera_x) // config.PIXEL_SIZE
+            mouse_block_y = (mouse_y + camera_y) // config.PIXEL_SIZE
+
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    save_current_world() # Use the new save function
+                    running = False
+
+                elif event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_o:
+                        save_current_world() # Use the new save function
+                    elif event.key == pygame.K_ESCAPE:
+                        save_current_world() # Save before returning to menu
+                        in_menu = True
+                    elif event.key == pygame.K_e: # Inventory Toggle
+                        inventory_open = not inventory_open
+                        if inventory_open:
+                            if machine_ui_open: machine_system.close_machine_ui(); machine_ui_open = False
+                            if crafting_ui_open: crafting_system.close_table_ui(); crafting_ui_open = False
+                            active_storage = None # Close storage UI
+                        else:
+                            inventory.dragged_item = None # Clear dragged item on close
+                    elif event.key == pygame.K_f: # Interaction Key
+                        if not (inventory_open or machine_ui_open or crafting_ui_open or active_storage): # Only interact if no UI is open
+                            block_type = get_block_at(mouse_block_x, mouse_block_y)
+                            if block_type == config.ORE_PROCESSOR:
+                                machine_system.toggle_machine_ui(mouse_block_x, mouse_block_y)
+                                machine_ui_open = machine_system.get_active_machine() is not None
+                            elif block_type == config.CRAFTING_TABLE:
+                                crafting_system.toggle_table_ui(mouse_block_x, mouse_block_y)
+                                crafting_ui_open = crafting_system.get_active_table() is not None
+                            elif block_type == config.STORAGE_CHEST:
+                                storage_origin = storage_system.multi_block_system.get_multi_block_origin(mouse_block_x, mouse_block_y)
+                                if storage_origin:
+                                    if active_storage and active_storage == storage_system.get_storage_at(*storage_origin):
+                                        active_storage = None # Close if interacting with the same one
                                     else:
-                                        print("Failed to reload world.")
-                                elif event.key == pygame.K_c:  # Press 'C' to toggle player collision
-                                    player.toggle_collision()
-                                    print(f"Player collision {'enabled' if player.collision_enabled else 'disabled'}.")
-                                elif event.key == pygame.VIDEORESIZE:
-                                    screen_width, screen_height = event.size
-                                    screen = pygame.display.set_mode((screen_width, screen_height), pygame.RESIZABLE)
-                                    machine_ui.update_screen_size(screen_width, screen_height)
-                                    crafting_ui.update_screen_size(screen_width, screen_height)
-                                    storage_ui.update_screen_size(screen_width, screen_height)
-                                elif event.key == pygame.K_1:  # Number keys to select hotbar slots
-                                    inventory.select_slot(0)
-                                elif event.key == pygame.K_2:
-                                    inventory.select_slot(1)
-                                elif event.key == pygame.K_3:
-                                    inventory.select_slot(2)
-                                elif event.key == pygame.K_4:
-                                    inventory.select_slot(3)
-                                elif event.key == pygame.K_5:
-                                    inventory.select_slot(4)
-                                elif event.key == pygame.K_6:
-                                    inventory.select_slot(5)
-                                elif event.key == pygame.K_7:
-                                    inventory.select_slot(6)
-                                elif event.key == pygame.K_8:
-                                    inventory.select_slot(7)
-                                elif event.key == pygame.K_9:
-                                    inventory.select_slot(8)
-                                elif event.key == pygame.K_EQUALS or event.key == pygame.K_PLUS:
-                                    VIEW_DISTANCE_MULTIPLIER = min(100.0, VIEW_DISTANCE_MULTIPLIER + 2)
-                                    print(f"View distance: {VIEW_DISTANCE_MULTIPLIER:.1f}x")
-                                    print(f"Max active chunks: {MAX_ACTIVE_CHUNKS}")
-                                elif event.key == pygame.K_MINUS:
-                                    VIEW_DISTANCE_MULTIPLIER = max(1.0, VIEW_DISTANCE_MULTIPLIER - 2)
-                                    print(f"View distance: {VIEW_DISTANCE_MULTIPLIER:.1f}x")
-                                    print(f"Max active chunks: {MAX_ACTIVE_CHUNKS}")
-                                elif event.key == pygame.K_i:  # Toggle debug mode
-                                    DEBUG_MODE = not DEBUG_MODE
-                                elif event.key == pygame.K_p:  # Add ore processor to inventory
-                                    inventory.add_item(config.ORE_PROCESSOR)
-                                    print("Ore processor added to inventory!")
-                                elif event.key == pygame.K_t:  # Add crafting table to inventory
-                                    inventory.add_item(config.CRAFTING_TABLE)
-                                    print("Crafting table added to inventory!")
-                                elif event.key == pygame.K_n:  # Press 'S' to add storage chest to inventory
-                                    inventory.add_item(config.STORAGE_CHEST)
-                                    print("Storage chest added to inventory!")
-                                elif event.key == pygame.K_v:  # Press 'V' to add conveyor belt to inventory
-                                    inventory.add_item(config.CONVEYOR_BELT)
-                                    print("Conveyor belt added to inventory!")
-                                elif event.key == pygame.K_b:  # Press 'B' to add vertical conveyor to inventory
-                                    inventory.add_item(config.VERTICAL_CONVEYOR)
-                                    print("Vertical conveyor added to inventory!")
-                                elif event.key == pygame.K_x:  # Press 'X' to add item extractor to inventory
-                                    inventory.add_item(config.ITEM_EXTRACTOR)
-                                    print("Item extractor added to inventory!")
-                                elif event.key == pygame.K_m:  # Add Auto Miner to inventory
-                                    inventory.add_item(config.AUTO_MINER)
-                                    print("Auto Miner added to inventory!")
-                                elif event.key == pygame.K_ESCAPE:  # Close active UIs when ESC is pressed
-                                    close_all_interfaces()
-                                elif event.key == pygame.K_z:  # Touche Z pour activer/désactiver le mode de placement rapide
-                                    conveyor_placement_active = not conveyor_placement_active
-                                    conveyor_placement_preview = []
-                                    print(f"Mode de placement rapide de convoyeurs {'activé' if conveyor_placement_active else 'désactivé'}")
-                                elif event.key == pygame.K_r:  # Touche R pour changer le mode de placement
-                                    conveyor_placement_mode = (conveyor_placement_mode + 1) % 3
-                                    mode_names = ["Ligne Droite", "Diagonale", "Zig-Zag"]
-                                    print(f"Mode de placement: {mode_names[conveyor_placement_mode]}")
-                                elif event.key == pygame.K_TAB:  # Tab pour changer la direction
-                                    conveyor_placement_direction = (conveyor_placement_direction + 1) % 4
-                                    directions = ["Droite", "Bas", "Gauche", "Haut"]
-                                    print(f"Direction de placement: {directions[conveyor_placement_direction]}")
-                                elif event.key == pygame.K_u:  # Undo last placement
-                                    undo_last_placement()
-                            
-                            elif event.type == pygame.MOUSEBUTTONDOWN:
-                                mouse_x, mouse_y = pygame.mouse.get_pos()
-                                # Calculate world PIXEL coordinates from mouse click
-                                world_pixel_x = mouse_x + camera_x
-                                world_pixel_y = mouse_y + camera_y
-                                # Convert pixel coordinates to world BLOCK coordinates
-                                block_x = int(world_pixel_x // config.PIXEL_SIZE)
-                                block_y = int(world_pixel_y // config.PIXEL_SIZE)
+                                        active_storage = storage_system.get_storage_at(*storage_origin)
+                                        if inventory_open: inventory_open = False
+                                        if machine_ui_open: machine_system.close_machine_ui(); machine_ui_open = False
+                                        if crafting_ui_open: crafting_system.close_table_ui(); crafting_ui_open = False
+                                else:
+                                    if storage_system.register_storage(mouse_block_x, mouse_block_y):
+                                        storage_origin = storage_system.multi_block_system.get_multi_block_origin(mouse_block_x, mouse_block_y)
+                                        if storage_origin:
+                                            active_storage = storage_system.get_storage_at(*storage_origin)
+                    elif event.key == pygame.K_r: # Rotate Placement
+                        placement_rotation = (placement_rotation + 1) % 4
+                    elif event.key == pygame.K_t: # Cycle Conveyor Mode/Direction
+                        selected_item_id = inventory.get_selected_item()
+                        if selected_item_id == config.CONVEYOR_BELT or selected_item_id == config.VERTICAL_CONVEYOR:
+                            if placement_conveyor_mode == 0:
+                                placement_conveyor_mode = 1
+                                placement_rotation = 1
+                            else:
+                                placement_conveyor_mode = 0
+                                placement_rotation = 0
+                    elif event.key == pygame.K_n: # Toggle Noclip
+                        collision_status = player.toggle_collision()
+                    elif pygame.K_1 <= event.key <= pygame.K_9:
+                        inventory.selected_slot = event.key - pygame.K_1
+                    elif event.key == pygame.K_0:
+                        inventory.selected_slot = HOTBAR_SIZE - 1
 
-                                if event.button == 1:  # Left button
-                                    # --- Interaction logic ---
-                                    # Use block_x, block_y (world block coords) for interactions
-                                    block_at_click = get_block_at(block_x, block_y)
+                elif event.type == pygame.MOUSEBUTTONDOWN:
+                    if event.button == 3 and player:
+                        selected_item_id = inventory.get_selected_item()
+                        if selected_item_id is not None and selected_item_id != config.EMPTY:
+                            target_block_type = get_block_at(mouse_block_x, mouse_block_y)
+                            if target_block_type == config.EMPTY:
+                                block_to_place = selected_item_id
+                                place_success = False
 
-                                    # Check if clicking on a machine or crafting table
-                                    if block_at_click == config.ORE_PROCESSOR or machine_system.is_machine_position(block_x, block_y):
-                                        # Open machine UI
-                                        if machine_system.open_machine_ui(block_x, block_y):
-                                            print(f"Machine UI opened at ({block_x}, {block_y})")
-                                    elif block_at_click == config.CRAFTING_TABLE or crafting_system.is_table_position(block_x, block_y):
-                                        # Open crafting table UI
-                                        if crafting_system.open_table_ui(block_x, block_y):
-                                            print(f"Crafting table UI opened at ({block_x}, {block_y})")
-                                    elif block_at_click == config.STORAGE_CHEST or storage_system.is_storage_position(block_x, block_y):
-                                        # Open storage UI
-                                        active_storage = (block_x, block_y)
-                                        print(f"Storage UI opened at ({block_x}, {block_y})")
-
-                                elif event.button == 3:  # Right button (Placement)
-                                    # Use block_x, block_y (world block coords) for placement checks and calls
-                                    if get_block_at(block_x, block_y) == config.EMPTY:
-                                        selected_item = inventory.get_selected_item()
-                                        if selected_item:
-                                            block_type_to_place, _ = selected_item
-
-                                            # --- Conveyor Placement Preview Logic ---
-                                            if conveyor_placement_active and (
-                                                block_type_to_place == config.CONVEYOR_BELT or block_type_to_place == config.VERTICAL_CONVEYOR
-                                            ):
-                                                if conveyor_placement_preview:
-                                                    placed_count = 0
-                                                    # conveyor_placement_preview should contain world BLOCK coords
-                                                    for place_block_x, place_block_y in conveyor_placement_preview:
-                                                        if inventory.get_item_count(block_type_to_place) > 0:
-                                                            # Register multi-block using block coords
-                                                            if multi_block_system.register_multi_block(place_block_x, place_block_y, block_type_to_place):
-                                                                # Set block using block coords
-                                                                if set_block_at(place_block_x, place_block_y, block_type_to_place):
-                                                                    conveyor_system.register_conveyor(place_block_x, place_block_y, conveyor_placement_direction)
-                                                                    inventory.remove_item(inventory.selected_slot, 1)
-                                                                    # Mark chunk modified (uses chunk coords, derived from block coords)
-                                                                    # mark_chunk_modified is called within set_block_at
-                                                                    placed_count += 1
-                                                                    last_placement = (place_block_x, place_block_y, block_type_to_place)  # Track last placement
-                                                                else:
-                                                                    multi_block_system.unregister_multi_block(place_block_x, place_block_y) # Undo registration
-                                                            else:
-                                                                print(f"Placement failed: register_multi_block failed at {place_block_x}, {place_block_y}")
-                                                        else:
-                                                            print("Ran out of items during conveyor placement.")
-                                                            break
-                                                    print(f"Placed {placed_count} conveyor sections.")
-                                                    conveyor_placement_preview = []
-                                                else:
-                                                    pass # Explicitly do nothing if no preview
-
-
-                                            # --- Multi-Block Placement (Example: Ore Processor) ---
-                                            elif block_type_to_place == config.ORE_PROCESSOR:
-                                                width, height = config.BLOCKS[block_type_to_place].get("size", (1, 1))
-                                                space_available = True
-                                                affected_chunks = set()
-
-                                                # Check if space is available using block coords
-                                                for dx in range(width):
-                                                    for dy in range(height):
-                                                        check_block_x = block_x + dx
-                                                        check_block_y = block_y + dy
-                                                        if get_block_at(check_block_x, check_block_y) != config.EMPTY:
-                                                if not space_available:
-                                                    break
-
-                                            if space_available:
-                                                # Place all blocks using block coords
-                                                placement_successful = True
-                                                placed_blocks_coords = [] # Keep track of placed blocks for potential rollback
-                                                for dx in range(width):
-                                                    for dy in range(height):
-                                                        place_block_x = block_x + dx
-                                                        place_block_y = block_y + dy
-                                                        if set_block_at(place_block_x, place_block_y, block_type_to_place):
-                                                            placed_blocks_coords.append((place_block_x, place_block_y))
-                                                            chunk_cx, chunk_cy = get_chunk_coords(place_block_x, place_block_y)
-                                                            affected_chunks.add((chunk_cx, chunk_cy)) # set_block_at already marks modified
-                                                            last_placement = (place_block_x, place_block_y, block_type_to_place)  # Track last placement
-                                                        else:
-                                                            placement_successful = False
-                                                            print(f"ERROR: Failed to place part of multi-block at ({place_block_x},{place_block_y})")
-                                                            break
-                                                    if not placement_successful:
-                                                        break
-
-                                                if placement_successful:
-                                                    # Register the machine/structure at its origin (using block coords)
-                                                    machine_system.register_machine(block_x, block_y)
-                                                    inventory.remove_item(inventory.selected_slot)
-                                                else:
-                                                    # Rollback: Set placed blocks back to empty
-                                                    print(f"Rolling back failed multi-block placement at Block({block_x},{block_y})")
-                                                    for rb_x, rb_y in placed_blocks_coords:
-                                                        set_block_at(rb_x, rb_y, config.EMPTY)
-
-
-                                            # --- Single Block Placement ---
-                                            # Use block_x, block_y for all checks and placements
-                                            elif block_type_to_place == config.CRAFTING_TABLE:
-                                                if set_block_at(block_x, block_y, block_type_to_place):
-                                                    crafting_system.register_table(block_x, block_y)
-                                                    inventory.remove_item(inventory.selected_slot)
-                                                    last_placement = (block_x, block_y, block_type_to_place)  # Track last placement
-                                            elif block_type_to_place == config.STORAGE_CHEST:
-                                                if set_block_at(block_x, block_y, block_type_to_place):
-                                                    if multi_block_system.register_multi_block(block_x, block_y, block_type_to_place):
-                                                        storage_system.register_storage(block_x, block_y)
-                                                        inventory.remove_item(inventory.selected_slot)
-                                                        last_placement = (block_x, block_y, block_type_to_place)  # Track last placement
-                                                    else:
-                                                        set_block_at(block_x, block_y, config.EMPTY) # Revert
-                                                        print(f"Failed to register multi-block for storage chest at Block({block_x},{block_y})")
-                                            elif block_type_to_place == config.CONVEYOR_BELT or block_type_to_place == config.VERTICAL_CONVEYOR:
-                                                if set_block_at(block_x, block_y, block_type_to_place):
-                                                    if multi_block_system.register_multi_block(block_x, block_y, block_type_to_place):
-                                                        conveyor_system.register_conveyor(block_x, block_y)
-                                                        inventory.remove_item(inventory.selected_slot)
-                                                        last_placement = (block_x, block_y, block_type_to_place)  # Track last placement
-                                                    else:
-                                                        set_block_at(block_x, block_y, config.EMPTY) # Revert
-                                                        print(f"Failed to register multi-block for conveyor at Block({block_x},{block_y})")
-                                            elif block_type_to_place == config.ITEM_EXTRACTOR:
-                                                if set_block_at(block_x, block_y, block_type_to_place):
-                                                    if multi_block_system.register_multi_block(block_x, block_y, block_type_to_place):
-                                                        extractor_system.register_extractor(block_x, block_y)
-                                                        extractor_system.set_direction(block_x, block_y, 0)
-                                                        inventory.remove_item(inventory.selected_slot)
-                                                        last_placement = (block_x, block_y, block_type_to_place)  # Track last placement
-                                                    else:
-                                                        set_block_at(block_x, block_y, config.EMPTY) # Revert
-                                                        print(f"Failed to register multi-block for extractor at Block({block_x},{block_y})")
-                                            elif block_type_to_place == config.AUTO_MINER:
-                                                if set_block_at(block_x, block_y, block_type_to_place):
-                                                    auto_miner_system.register_miner(block_x, block_y)
-                                                    inventory.remove_item(inventory.selected_slot)
-                                                    last_placement = (block_x, block_y, block_type_to_place)  # Track last placement
-                                            else: # Default case for simple blocks
-                                                if set_block_at(block_x, block_y, block_type_to_place):
-                                                    inventory.remove_item(inventory.selected_slot)
-                                                    last_placement = (block_x, block_y, block_type_to_place)  # Track last placement
-                                    # ... (rest of right-click logic) ...
-
-                        elif event.type == pygame.MOUSEBUTTONUP:
-                            mouse_x, mouse_y = pygame.mouse.get_pos()
-                            dropped = False
-                            
-                            if inventory.dragged_item:
-                                dropped = inventory.drop_item(mouse_x, mouse_y, screen_width, screen_height)
-                                
-                                if not dropped and machine_system.get_active_machine() is not None and machine_ui.is_point_in_ui(mouse_x, mouse_y):
-                                    machine_pos = machine_system.get_active_machine()
-                                    slot = machine_ui.get_slot_at_position(mouse_x, mouse_y)
-                                    
-                                    if slot == "input":
-                                        item = inventory.dragged_item
-                                        if machine_system.add_item_to_machine(machine_pos, item[0], item[1]):
-                                            inventory.dragged_item = None
-                                            inventory.drag_source = None
-                                            inventory.drag_slot = None
-                                            dropped = True
-                                
-                                if not dropped and crafting_system.get_active_table() is not None and crafting_ui.is_point_in_ui(mouse_x, mouse_y):
-                                    table_pos = crafting_system.get_active_table()
-                                    slot_info = crafting_ui.get_slot_at_position(mouse_x, mouse_y)
-                                    
-                                    if slot_info and slot_info[0] == "grid":
-                                        _, grid_x, grid_y = slot_info
-                                        item = inventory.dragged_item
-                                        if crafting_system.add_item_to_grid(table_pos, grid_x, grid_y, item[0], item[1]):
-                                            inventory.dragged_item = None
-                                            inventory.drag_source = None
-                                            inventory.drag_slot = None
-                                            dropped = True
-                                
-                                if not dropped and active_storage is not None and storage_ui.is_point_in_ui(mouse_x, mouse_y) and inventory.dragged_item:
-                                    if storage_system.add_item_to_storage(*active_storage, inventory.dragged_item[0], inventory.dragged_item[1]):
-                                        inventory.dragged_item = None
-                                        inventory.drag_source = None
-                                        inventory.drag_slot = None
-                                        dropped = True
-                                
-                                if not dropped and inventory.drag_source == "storage" and inventory.dragged_item:
-                                    storage_system.add_item_to_storage(*inventory.drag_slot, inventory.dragged_item[0], inventory.dragged_item[1])
-                                    inventory.dragged_item = None
-                                    inventory.drag_source = None
-                                    inventory.drag_slot = None
-                    
-                    keys = pygame.key.get_pressed()
-                    player.update(dt, keys, check_collision)
-                    
-                    camera_x = player.x - screen_width // 2
-                    camera_y = player.y - screen_height // 2
-                    
-                    mouse_pressed = pygame.mouse.get_pressed()[0]
-                    if mouse_pressed and not inventory.dragged_item:
-                        mouse_x, mouse_y = pygame.mouse.get_pos()
-                        laser_points = handle_mining(dt, mouse_x, mouse_y, player.x, player.y, camera_x, camera_y)
-                        laser_active = len(laser_points) > 0
-                    else:
-                        laser_active = False
-                        laser_points = []
-                    
-                    if ENABLE_INFINITE_WORLD:
-                        ensure_chunks_around_point(player.x, player.y, CHUNK_LOAD_RADIUS)
-                        
-                        if int(current_time) % 5 == 0 and int(current_time) != int(last_time):
-                            print(f"Checking chunks to unload. {len(loaded_chunks)} chunks currently loaded.")
-                            unload_distant_chunks(player.x, player.y, CHUNK_UNLOAD_DISTANCE)
-                    
-                    machine_system.update()
-                    
-                    conveyor_system.update(dt, storage_system, machine_system)
-                    
-                    extractor_system.update(dt)
-                    
-                    auto_miner_system.update(dt)  # Update the auto miners
-                    
-                    time_of_day += dt / DAY_LENGTH
-                    if time_of_day >= 1.0:
-                        time_of_day -= 1.0
-                    
-                    # Clear the screen (e.g., with black or a dynamic sky color)
-                    screen.fill((0, 0, 0)) # Fill with black first
-
-                    draw_background(screen, camera_x, camera_y, time_of_day, background_width, background_height, 
-                                    cloud_layer, hill_layers, star_layer)
-                    
-                    active_chunks = get_active_chunks(player.x, player.y, screen_width, screen_height, 
-                                                      VIEW_DISTANCE_MULTIPLIER, MAX_ACTIVE_CHUNKS)
-                    render_visible_chunks(screen, camera_x, camera_y, active_chunks, loaded_chunks, block_surfaces, machine_system)
-                    
-                    if DEBUG_MODE:
-                        render_debug_chunks(screen, camera_x, camera_y, active_chunks)
-
-                    player.draw(screen, camera_x, camera_y)
-                    
-                    if laser_active and len(laser_points) >= 2:
-                        start_point = (player.x + player.width // 2 - camera_x,
-                                    player.y + player.height // 2 - camera_y)
-                        pygame.draw.line(screen, (255, 0, 0), start_point, laser_points[0], 3)
-                    
-                    inventory.draw(screen, screen_width, screen_height)
-                    
-                    active_machine = machine_system.get_active_machine()
-                    if active_machine:
-                        machine_data = machine_system.get_machine_data(active_machine)
-                        progress = machine_system.get_machine_progress(active_machine)
-                        machine_ui.draw(screen, machine_data, progress, inventory.dragged_item)
-                    
-                    active_table = crafting_system.get_active_table()
-                    if active_table:
-                        table_data = crafting_system.get_table_data(active_table)
-                        crafting_ui.draw(screen, table_data, inventory.dragged_item)
-                    
-                    if active_storage:
-                        storage_data = storage_system.get_storage_at(*active_storage)
-                        storage_ui.draw(screen, storage_data, inventory.dragged_item)
-                    
-                    conveyor_system.draw_items(screen, camera_x, camera_y, block_surfaces)
-                    
-                    if conveyor_placement_active and inventory.get_selected_item():
-                        selected_type = inventory.get_selected_item()[0]
-                        if selected_type in [config.CONVEYOR_BELT, config.VERTICAL_CONVEYOR]:
-                            mouse_x, mouse_y = pygame.mouse.get_pos()
-                            # Calculate target block from mouse screen coords
-                            world_pixel_x = mouse_x + camera_x
-                            world_pixel_y = mouse_y + camera_y
-                            target_block_x = int(world_pixel_x // config.PIXEL_SIZE)
-                            target_block_y = int(world_pixel_y // config.PIXEL_SIZE)
-
-                            width, height = multi_block_system.block_sizes.get(selected_type, (1, 1)) # Default to 1x1 if not found
-
-                            conveyor_placement_preview = [] # List of world BLOCK coords
-                            count_available = inventory.get_selected_item()[1]
-                            max_length = min(20, count_available) # Limit preview length
-
-                            # Calculate preview based on BLOCK coordinates
-                            if conveyor_placement_mode == 0: # Straight Line
-                                dx, dy = 0, 0
-                                if conveyor_placement_direction == 0: dx = width # Move right by block width
-                                elif conveyor_placement_direction == 1: dy = height # Move down by block height
-                                elif conveyor_placement_direction == 2: dx = -width # Move left by block width
-                                elif conveyor_placement_direction == 3: dy = -height # Move up by block height
-
-                                for i in range(max_length):
-                                    next_block_x = target_block_x + i * dx
-                                    next_block_y = target_block_y + i * dy
-
-                                    # Check space for the entire block footprint
-                                    space_available = True
-                                    for check_dx in range(width):
-                                        for check_dy in range(height):
-                                            check_x = next_block_x + check_dx
-                                            check_y = next_block_y + check_dy
-                                            # Check if any part of the footprint is occupied
-                                            if get_block_at(check_x, check_y) != config.EMPTY:
-                                                space_available = False
+                                size = multi_block_system.block_sizes.get(block_to_place, (1, 1))
+                                if size != (1, 1):
+                                    can_place_multi = True
+                                    for dx in range(size[0]):
+                                        for dy in range(size[1]):
+                                            if get_block_at(mouse_block_x + dx, mouse_block_y + dy) != config.EMPTY:
+                                                can_place_multi = False
                                                 break
-                                        if not space_available:
-                                            break
+                                        if not can_place_multi: break
 
-                                    if space_available:
-                                        conveyor_placement_preview.append((next_block_x, next_block_y))
+                                    if can_place_multi:
+                                        if multi_block_system.register_multi_block(mouse_block_x, mouse_block_y, block_to_place):
+                                            if set_block_at(mouse_block_x, mouse_block_y, block_to_place):
+                                                if block_to_place == config.STORAGE_CHEST:
+                                                    storage_system.register_storage(mouse_block_x, mouse_block_y)
+                                                elif block_to_place == config.ORE_PROCESSOR:
+                                                    machine_system.register_machine(mouse_block_x, mouse_block_y, block_to_place)
+                                                elif block_to_place == config.CRAFTING_TABLE:
+                                                    crafting_system.register_table(mouse_block_x, mouse_block_y)
+                                                elif block_to_place == config.CONVEYOR_BELT or block_to_place == config.VERTICAL_CONVEYOR:
+                                                    conveyor_system.register_conveyor(mouse_block_x, mouse_block_y, placement_rotation)
+                                                elif block_to_place == config.ITEM_EXTRACTOR:
+                                                    extractor_system.register_extractor(mouse_block_x, mouse_block_y)
+                                                elif block_to_place == config.AUTO_MINER:
+                                                    auto_miner_system.register_miner(mouse_block_x, mouse_block_y)
+
+                                                inventory.remove_item(selected_item_id)
+                                                place_success = True
+                                        else:
+                                            print("Failed to register multi-block structure.")
                                     else:
-                                        break # Stop preview if space is blocked
+                                        print("Not enough space for multi-block structure.")
+                                elif size == (1, 1):
+                                    if set_block_at(mouse_block_x, mouse_block_y, block_to_place):
+                                        if block_to_place == config.CONVEYOR_BELT or block_to_place == config.VERTICAL_CONVEYOR:
+                                            conveyor_system.register_conveyor(mouse_block_x, mouse_block_y, placement_rotation)
+                                        inventory.remove_item(selected_item_id)
+                                        place_success = True
 
-                            elif conveyor_placement_mode == 1: # Diagonal (Assuming width=height for simplicity here)
-                                # This mode might need refinement if width != height
-                                step_x, step_y = 0, 0
-                                if conveyor_placement_direction == 0: step_x, step_y = width, height   # Down-Right
-                                elif conveyor_placement_direction == 1: step_x, step_y = -width, height  # Down-Left
-                                elif conveyor_placement_direction == 2: step_x, step_y = -width, -height # Up-Left
-                                elif conveyor_placement_direction == 3: step_x, step_y = width, -height  # Up-Right
+                                if place_success:
+                                    placement_rotation = 0
+                                    placement_conveyor_mode = 0
 
-                                for i in range(max_length):
-                                    next_block_x = target_block_x + i * step_x
-                                    next_block_y = target_block_y + i * step_y
+                elif event.type == pygame.MOUSEBUTTONUP:
+                    if event.button == 1:
+                        pass
+                    elif event.button == 3:
+                        pass
 
-                                    # Check space (same as straight line)
-                                    space_available = True
-                                    for check_dx in range(width):
-                                        for check_dy in range(height):
-                                            check_x = next_block_x + check_dx
-                                            check_y = next_block_y + check_dy
-                                            if get_block_at(check_x, check_y) != config.EMPTY:
-                                                space_available = False
-                                                break
-                                        if not space_available:
-                                            break
+            current_time = time.time()
+            dt = current_time - last_time
+            last_time = current_time
 
-                                    if space_available:
-                                        conveyor_placement_preview.append((next_block_x, next_block_y))
-                                    else:
-                                        break
-                            # Add ZigZag mode (mode 2) if needed
+            keys = pygame.key.get_pressed()
+            if player:
+                player.update(dt, keys, check_collision)
+                camera_x = player.x - screen_width // 2
+                camera_y = player.y - screen_height // 2
 
-                            # --- Render Preview ---
-                            preview_surface = None
-                            if conveyor_placement_preview:
-                                # Create a surface for one block preview
-                                preview_block_surf = pygame.Surface((width * config.PIXEL_SIZE, height * config.PIXEL_SIZE), pygame.SRCALPHA)
-                                preview_color = list(config.BLOCKS[selected_type]["color"]) + [128] # Semi-transparent color
-                                preview_block_surf.fill(preview_color)
+                if ENABLE_INFINITE_WORLD:
+                    ensure_chunks_around_point(player.x, player.y, CHUNK_LOAD_RADIUS)
+                    if int(current_time) % 5 == 0:
+                        unload_distant_chunks(player.x, player.y, CHUNK_UNLOAD_DISTANCE, rendered_chunk_cache)
 
-                                # Draw direction arrow on the preview surface
-                                arrow_color = (0, 0, 0, 200)
-                                center_px_x = width * config.PIXEL_SIZE // 2
-                                center_px_y = height * config.PIXEL_SIZE // 2
-                                arrow_size_px = min(width, height) * config.PIXEL_SIZE // 3
+            mouse_pressed = pygame.mouse.get_pressed()[0]
+            if mouse_pressed and not inventory.dragged_item and player:
+                mouse_x, mouse_y = pygame.mouse.get_pos()
+                laser_points = handle_mining(dt, mouse_x, mouse_y, player.x, player.y, camera_x, camera_y)
+                laser_active = len(laser_points) > 0
+            else:
+                laser_active = False
+                laser_points = []
 
-                                # Arrow points based on conveyor_placement_direction
-                                if conveyor_placement_direction == 0: # Right
-                                    pygame.draw.polygon(preview_block_surf, arrow_color, [
-                                        (center_px_x - arrow_size_px//2, center_px_y - arrow_size_px//2),
-                                        (center_px_x + arrow_size_px//2, center_px_y),
-                                        (center_px_x - arrow_size_px//2, center_px_y + arrow_size_px//2)
-                                    ])
-                                elif conveyor_placement_direction == 1: # Down
-                                    pygame.draw.polygon(preview_block_surf, arrow_color, [
-                                        (center_px_x - arrow_size_px//2, center_px_y - arrow_size_px//2),
-                                        (center_px_x + arrow_size_px//2, center_px_y - arrow_size_px//2),
-                                        (center_px_x, center_px_y + arrow_size_px//2)
-                                    ])
-                                elif conveyor_placement_direction == 2: # Left
-                                    pygame.draw.polygon(preview_block_surf, arrow_color, [
-                                        (center_px_x + arrow_size_px//2, center_px_y - arrow_size_px//2),
-                                        (center_px_x - arrow_size_px//2, center_px_y),
-                                        (center_px_x + arrow_size_px//2, center_px_y + arrow_size_px//2)
-                                    ])
-                                elif conveyor_placement_direction == 3: # Up
-                                    pygame.draw.polygon(preview_block_surf, arrow_color, [
-                                        (center_px_x - arrow_size_px//2, center_px_y + arrow_size_px//2),
-                                        (center_px_x + arrow_size_px//2, center_px_y + arrow_size_px//2),
-                                        (center_px_x, center_px_y - arrow_size_px//2)
-                                    ])
+            machine_system.update()
+            conveyor_system.update(dt, storage_system, machine_system)
+            extractor_system.update(dt)
+            auto_miner_system.update(dt)
 
-                                # Blit the preview surface for each block in the preview list
-                                for block_render_x, block_render_y in conveyor_placement_preview:
-                                    # Convert block world coords to screen pixel coords
-                                    screen_x = block_render_x * config.PIXEL_SIZE - camera_x
-                                    screen_y = block_render_y * config.PIXEL_SIZE - camera_y
-                                    screen.blit(preview_block_surf, (screen_x, screen_y))
+            time_of_day += dt / DAY_LENGTH
+            if time_of_day >= 1.0: time_of_day -= 1.0
 
-                    # Draw dragged item last so it's on top
-                    inventory.draw_dragged_item(screen)
-                    
-                    # Draw performance stats if enabled
-                    if PERFORMANCE_MONITOR:
-                        draw_performance_stats(screen, dt, len(active_chunks), len(loaded_chunks), fps_font)
-                    
-                    # Update the display
-                    pygame.display.flip()
-                    
-                    # Cap the frame rate
-                    clock.tick(config.FPS_CAP)
-                
-                # --- End of main game loop ---
-                
-                # Save world on exit
-                save_world_to_file(SAVE_FILE, storage_system, (player.x, player.y), conveyor_system, extractor_system, multi_block_system, auto_miner_system)
-                
-                # Stop worker threads
-                stop_chunk_workers(chunk_workers)
-                
-                # Disable and print profiler stats if debug mode was on
-                profiler.disable()
+            screen.fill((0, 0, 0))
+
+            if cloud_layer and hill_layers and star_layer:
+                draw_background(screen, camera_x, camera_y, time_of_day, background_width, background_height,
+                                cloud_layer, hill_layers, star_layer)
+
+            if player:
+                active_chunks = get_active_chunks(player.x, player.y, screen_width, screen_height,
+                                                VIEW_DISTANCE_MULTIPLIER, MAX_ACTIVE_CHUNKS)
+                render_visible_chunks(screen, camera_x, camera_y, active_chunks, loaded_chunks, block_surfaces, machine_system)
                 if DEBUG_MODE:
-                    print("\n--- Profiler Stats ---")
-                    profiler.print_stats(sort='cumulative')
-                
-                # Quit Pygame and exit
-                pygame.quit()
-                sys.exit()
-    except Exception as e:
-        print("FATAL ERROR in main loop:", e)
-        import traceback
-        traceback.print_exc()
-        input("Press Enter to exit...")  # Pause to see error
+                    render_debug_chunks(screen, camera_x, camera_y, active_chunks)
+
+            if player:
+                player.draw(screen, camera_x, camera_y)
+
+            if laser_active and len(laser_points) >= 2 and player:
+                 start_point = (player.x + player.width // 2 - camera_x,
+                               player.y + player.height // 2 - camera_y)
+                 pygame.draw.line(screen, (255, 0, 0), start_point, laser_points[0], 3)
+
+            inventory.draw(screen, screen_width, screen_height)
+            inventory.draw_dragged_item(screen)
+
+            if PERFORMANCE_MONITOR:
+                draw_performance_stats(screen, dt, len(active_chunks) if player else 0, len(loaded_chunks), fps_font)
+
+            pygame.display.flip()
+            clock.tick(config.FPS_CAP)
+        else:
+            print("Warning: Game loop running but game not initialized.")
+            in_menu = True
+            clock.tick(config.FPS_CAP)
+
+    if game_initialized and CURRENT_SAVE_FILE_NAME:
+        save_current_world()
+    stop_chunk_workers(chunk_workers)
+    rendered_chunk_cache.clear()
+    pygame.quit()
+    sys.exit()
 
 
 

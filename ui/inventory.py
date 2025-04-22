@@ -2,8 +2,11 @@ import pygame
 from core import config
 from world.block_utils import get_block_name, get_block_color
 
+# Number of slots in the hotbar
+HOTBAR_SIZE = 9
+
 class Inventory:
-    def __init__(self, size=9):
+    def __init__(self, size=HOTBAR_SIZE):
         self.size = size
         self.slots = [None] * size  # List to store items (block_type, count)
         self.selected_slot = 0
